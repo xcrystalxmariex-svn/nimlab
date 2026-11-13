@@ -1,0 +1,213 @@
+{
+  "roles": {
+    "intent_router": {
+      "label": "Intent Router / Fast Dispatcher",
+      "backend": "model",
+      "model": "nvidia/nemotron-3.5-bolt-e4b"
+    },
+    "persona": {
+      "label": "Conversational Persona LLM",
+      "backend": "model",
+      "model": "poolside/laguna-xs-2.1"
+    },
+    "reasoning": {
+      "label": "Agentic Long-Context & Reasoning Model",
+      "backend": "model",
+      "model": "mistralai/mistral-large-4-1t-a52b"
+    },
+    "coding": {
+      "label": "Dedicated Coding & Tool-Calling Model",
+      "backend": "model",
+      "model": "google/gemma-4-31b-it"
+    },
+    "vision": {
+      "label": "Multimodal Vision-Language Model (VLM)",
+      "backend": "model",
+      "model": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    },
+    "ocr": {
+      "label": "Document & Structured OCR Model",
+      "backend": "model",
+      "model": "nvidia/nemotron-parse-2.0"
+    },
+    "chart_parser": {
+      "label": "Chart & Plot Parser",
+      "backend": "model",
+      "model": null
+    },
+    "video": {
+      "label": "Video & Temporal Understanding Model",
+      "backend": "model",
+      "model": null
+    },
+    "asr": {
+      "label": "Automatic Speech Recognition (ASR / STT)",
+      "backend": "model",
+      "model": null
+    },
+    "omni_audio": {
+      "label": "Omni-Modal Audio-Language Model (Music & Ambient Audio)",
+      "backend": "model",
+      "model": null
+    },
+    "tts": {
+      "label": "Neural Text-to-Speech (TTS)",
+      "backend": "model",
+      "model": "nvidia/magpie-tts-multilingual"
+    },
+    "image_gen": {
+      "label": "Text-to-Image Generation Model",
+      "backend": "model",
+      "model": null
+    },
+    "audio_gen": {
+      "label": "Audio / Music Generation Model",
+      "backend": "model",
+      "model": null
+    },
+    "embedding": {
+      "label": "Dense Text & Multimodal Embedding Model",
+      "backend": "model",
+      "model": "nvidia/llama-nemotron-embed-vl-1b-v2"
+    },
+    "reranker": {
+      "label": "Semantic Reranker Model",
+      "backend": "model",
+      "model": null
+    },
+    "guard_translate": {
+      "label": "Translation & Guardrail Model",
+      "backend": "model",
+      "model": null
+    },
+    "compactor": "nvidia/nemotron-3.5-bolt-e4b"
+  },
+  "http_settings": {
+    "timeout_sec": 60,
+    "retries": 2,
+    "backoff_sec": 1.5
+  },
+  "voice_settings": {
+    "voice_name": "Magpie-Multilingual.EN-US.Aria",
+    "auto_tts": true,
+    "language": "en-US",
+    "tts_url": "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com/v1/audio/synthesize",
+    "voice_profiles": [
+      "Magpie-Multilingual.EN-US.Aria",
+      "Magpie-Multilingual.EN-US.Jason"
+    ],
+    "fast_route": true,
+    "fast_route_max_words": 60,
+    "router_timeout_sec": 4,
+    "turn_timeout_sec": 45,
+    "slow_turn_sec": 20,
+    "show_stages": true
+  },
+  "mcp_settings": {
+    "enabled": true,
+    "url": "https://svn-dev.online/mcp",
+    "auth": {
+      "style": "x-api-key",
+      "header_name": "X-API-Key",
+      "key_env": "MCP_API_KEY"
+    },
+    "protocol_version": "2025-06-18",
+    "allowed_tools": [],
+    "blocked_tools": [],
+    "dedicated_endpoint": "auto",
+    "own_memory_tool": "",
+    "confirm_tool_calls": false,
+    "max_tool_steps": 4,
+    "max_calls_per_step": 3,
+    "tool_timeout_sec": 20,
+    "max_result_chars": 8000,
+    "max_response_bytes": 1000000
+  },
+  "memory_settings": {
+    "recall_top_k": 6,
+    "similarity_threshold": 0.45,
+    "rerank_candidates": 16,
+    "recent_on_recall_ask": 3,
+    "search_threshold": 0.3,
+    "trace": true,
+    "hybrid_recall": true,
+    "hybrid_keyword_weight": 0.6,
+    "exclude_context_turns": true,
+    "recall_max_chars": 2400,
+    "recall_version": 380
+  },
+  "guard_settings": {
+    "check_input": false,
+    "check_output": false,
+    "block_on_unsafe": true,
+    "translate_target": "English"
+  },
+  "routing_settings": {
+    "use_intent_router": true,
+    "show_route": true,
+    "reasoning_gate": true,
+    "reasoning_min_chars": 4000,
+    "reasoning_keywords": true,
+    "chat_fast_path": true,
+    "chat_max_words": 16,
+    "router_timeout_sec": 8,
+    "environment_block": true,
+    "migrate_prompts": true
+  },
+  "judge_settings": {
+    "judges": [
+      "mistralai/mistral-large-4-1t-a52b",
+      "nvidia/nemotron-3-ultra-550b-a55b"
+    ],
+    "repeats": 1,
+    "judge_temperature": 0.0,
+    "max_candidates_per_type": 16,
+    "execute_generated_code": true,
+    "code_timeout_sec": 10,
+    "entity_combos": [
+      {
+        "name": "current",
+        "roles": {}
+      },
+      {
+        "name": "ultra_brain",
+        "roles": {
+          "persona": "nvidia/nemotron-3-ultra-550b-a55b"
+        }
+      },
+      {
+        "name": "mistral_brain",
+        "roles": {
+          "persona": "mistralai/mistral-large-4-1t-a52b"
+        }
+      }
+    ],
+    "candidate_overrides": {}
+  },
+  "discovery_settings": {
+    "page_ttl_hours": 72,
+    "spec_ttl_hours": 72,
+    "probe_workers": 3,
+    "probe_timeout_sec": 20,
+    "host_delays_sec": {
+      "build.nvidia.com": 10,
+      "docs.api.nvidia.com": 3,
+      "api.ngc.nvidia.com": 1
+    },
+    "include_retired_in_sweep": false,
+    "playground_uses_catalog": true
+  },
+  "agent_settings": {
+    "name": ""
+  },
+  "ui_settings": {
+    "color": "auto",
+    "color_depth": "auto"
+  },
+  "service_settings": {
+    "backend": "termux",
+    "telegram": false,
+    "wake_lock": false,
+    "scheduler": true
+  }
+}
