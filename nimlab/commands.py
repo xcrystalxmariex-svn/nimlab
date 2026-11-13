@@ -199,6 +199,8 @@ CATALOG = [
     ("scheduler", "jobs history [name]", "Run history: status, time, bug IDs", ""),
     ("scheduler", "jobs next <name>", "The next run times", ""),
     ("scheduler", "jobs audit", "Every change to jobs and suggested actions, with who made it", ""),
+    ("scheduler", "jobs tools", "The MCP tools the server offers now, to pick for a prompt task", ""),
+    ("scheduler", "jobs free-time --tools a,b", "Ready-made hourly Free time job with the tools you pick", ""),
     ("scheduler", "heartbeat status", "Heartbeat on/off, next run, limits, the last report", ""),
     ("scheduler", "heartbeat run-now", "One heartbeat now: Quill decides and acts", "l"),
     ("scheduler", "heartbeat enable", "Turn the heartbeat on", ""),

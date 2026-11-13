@@ -253,11 +253,29 @@ def best_outcome(outcomes):
 
 
 class Prober:
-    def __init__(self, api_key=None, http=None, timeout=20, router=None):
+    def __init__(self, api_key=None, http=None, timeout=20, router=None, rpm=None, limiter=None):
         self.api_key = api_key if api_key is not None else load_api_key()
         self.http = http or HttpClient(timeout=timeout, retries=1, backoff=2.0, max_bytes=2 * 1024 * 1024)
         self.timeout = timeout
         self._router = router
+        # v3.8.3: paced so a sweep doesn't use up the free tier's per-minute limit
+        if limiter is None:
+            from .core import RateLimiter, sweep_rpm
+            if rpm is None and http is not None:
+                rpm = 0     # an injected client (tests, callers that pace themselves) is not paced here
+            if rpm is None:
+                try:
+                    rpm = sweep_rpm(config.load_cluster_config().get("discovery_settings", {}))
+                except Exception:  # noqa: BLE001
+                    rpm = sweep_rpm()
+            limiter = RateLimiter(rpm)
+        self.limiter = limiter
+
+    def _paced(self, method, url, data, headers):
+        self.limiter.wait()
+        res = self.http.request(method, url, data, headers, self.timeout)
+        self.limiter.note(res)
+        return res
 
     @property
     def router(self):
@@ -278,17 +296,17 @@ class Prober:
     def _send(self, plan, body):
         url, method = plan["url"], plan.get("method", "POST")
         if method == "GET":
-            return self.http.request("GET", url, None, self._headers(), self.timeout)
+            return self._paced("GET", url, None, self._headers())
         if plan.get("content_type") == "multipart/form-data":
             data, ctype = build_multipart(spec.multipart_fields(plan))
             h = self._headers("application/json, audio/*")
             h["Content-Type"] = ctype
             if plan.get("function_id"):
                 h["function-id"] = plan["function_id"]
-            return self.http.request("POST", url, data, h, self.timeout)
+            return self._paced("POST", url, data, h)
         h = self._headers("application/json")
         h["Content-Type"] = "application/json"
-        return self.http.request(method, url, json.dumps(body or {}).encode("utf-8"), h, self.timeout)
+        return self._paced(method, url, json.dumps(body or {}).encode("utf-8"), h)
 
     def probe_plan(self, plan, deprecated=False, retired=False):
         """Probe one plan: schema-built body first, then the page example
@@ -309,7 +327,7 @@ class Prober:
             if status != PAYLOAD:
                 break
         if plan.get("probe_get") and (not outcomes or outcomes[-1]["status"] == PAYLOAD):
-            res = self.http.request("GET", plan["probe_get"], None, self._headers(), self.timeout)
+            res = self._paced("GET", plan["probe_get"], None, self._headers())
             status, reason = classify(res.status, res.error_kind if not res.ok else None,
                                       res.text if not res.ok else "", deprecated, retired)
             if status == LIVE:
@@ -546,7 +564,9 @@ def run(model_ids, resolver, prober=None, probe=True, workers=3, log=print, use_
         log(f"Low memory/CPU: using {scaled} probe workers instead of {workers}.")
     workers = scaled
     if probe and prober and prober.api_key and todo:
-        log(f"Probing {len(todo)} models with {workers} workers...")
+        lim = getattr(prober, "limiter", None)
+        pace = f", paced to {int(lim.rpm)} requests/min" if lim is not None and lim.rpm > 0 else ""
+        log(f"Probing {len(todo)} models with {workers} workers{pace}...")
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
         for n, (mid, e) in enumerate(ex.map(one, todo), 1):
             plans.pop(mid, None)        # drop the page plan once probed (memory on small boxes)

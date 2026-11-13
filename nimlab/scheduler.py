@@ -55,7 +55,7 @@ try:
 except ImportError:  # pragma: no cover - not on Linux/Termux
     fcntl = None
 
-ACTION_TYPES = ("quill_prompt", "nimlab_command", "test", "mcp_tool", "shell", "chain", "heartbeat")
+ACTION_TYPES = ("quill_prompt", "quill_task", "nimlab_command", "test", "mcp_tool", "shell", "chain", "heartbeat")
 USER_ACTION_TYPES = ACTION_TYPES[:-1]
 OVERLAP = ("skip", "queue")
 CATCHUP = ("one", "none", "all")
@@ -337,6 +337,87 @@ def _shell_on():
         return False
 
 
+def _split_tools(v):
+    if isinstance(v, (list, tuple)):
+        items = v
+    else:
+        items = re.split(r"[,\s]+", str(v or "").strip())
+    out = []
+    for t in items:
+        t = str(t).strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def check_task(action):
+    """quill_task (v3.8.3): a prompt plus the MCP tools picked for the job.
+    -> {"prompt", "tools": [names], "only": bool, "require_tool": bool}.
+    A plain string is the prompt; JSON gives every field."""
+    a = action
+    if isinstance(a, str):
+        t = a.strip()
+        if t.startswith("{"):
+            try:
+                a = json.loads(t)
+            except ValueError as e:
+                raise JobError(f"quill_task: the action is not JSON ({e})") from None
+        else:
+            a = {"prompt": t}
+    if not isinstance(a, dict):
+        raise JobError("quill_task needs a prompt and a list of tools")
+    prompt = str(a.get("prompt") or "").strip()
+    if not prompt:
+        raise JobError("quill_task needs a prompt: what Quill should do")
+    tools = _split_tools(a.get("tools"))
+    only = _bool(a.get("only", True))
+    if only and not tools:
+        raise JobError("quill_task: pick at least one MCP tool, or let Quill use any tool (only=false)")
+    for t in tools:
+        if not re.match(r"^[A-Za-z0-9_.:\-]{1,128}$", t):
+            raise JobError(f"quill_task: {t!r} is not a tool name")
+    return {"prompt": prompt, "tools": tools, "only": only, "require_tool": _bool(a.get("require_tool", False))}
+
+
+def task_brief(a):
+    """One line for menus and /jobs."""
+    a = a if isinstance(a, dict) else {}
+    mode = "only these" if a.get("only", True) else "any tool, these preferred"
+    req = ", must call one" if a.get("require_tool") else ""
+    tools = ", ".join(a.get("tools") or []) or "(none)"
+    return f"{str(a.get('prompt') or '')[:60]} | tools: {tools} ({mode}{req})"
+
+
+FREE_TIME_PROMPT = ("It's your free time. Pick one of your tools that looks fun right now, play with it for a "
+                    "bit (call it at least once), then tell me in a few lines what you picked, what you did "
+                    "with it and how it went.")
+
+
+def free_time_template(tools, name="free-time", result_to="telegram"):
+    """The ready-made "Free time" job: hourly, Quill picks one of the chosen
+    (entertainment) tools, plays with it and says what it did."""
+    tools = _split_tools(tools)
+    return {"name": name, "description": "Free time: Quill picks one of the chosen tools and plays with it",
+            "schedule": "FREQ=HOURLY;INTERVAL=1", "action_type": "quill_task",
+            "action": {"prompt": FREE_TIME_PROMPT, "tools": tools, "only": True, "require_tool": True},
+            "timeout_sec": 600, "result_to": {"dest": result_to, "when": "always"}}
+
+
+def live_mcp_tools():
+    """The tool list the MCP server offers right now (the admin console's
+    toggles decide it). -> [{name, description, ...}]. Raises JobError."""
+    from . import config
+    from .mcp import MCPClient
+    cfg = config.load_cluster_config() or {}
+    s = cfg.get("mcp_settings", {}) or {}
+    if not (s.get("enabled") and s.get("url")):
+        raise JobError("MCP is not set up (menu M, or nimlab setup mcp)")
+    try:
+        return list(MCPClient(s).list_tools() or [])
+    except Exception as e:  # noqa: BLE001
+        raise JobError(f"could not load the MCP tool list: {str(e)[:200]}") from None
+
+
 def check_action(at, action, sa_shell=None, depth=0):
     """Validate one action of a type. -> the cleaned action."""
     if at == "heartbeat":
@@ -357,6 +438,8 @@ def check_action(at, action, sa_shell=None, depth=0):
                                    "or the lab)")
             return " ".join(shlex.quote(x) for x in argv)
         return a
+    if at == "quill_task":
+        return check_task(action)
     if at == "test":
         from . import systests
         names = action if isinstance(action, list) else re.split(r"[,\s]+", str(action or "").strip())
@@ -612,6 +695,37 @@ class LiveContext:
             return False, (getattr(r, "error", None) or "no reply")
         return True, getattr(r, "text", "") or ""
 
+    def quill_task(self, a, who="scheduler", max_tokens=1024, timeout=None):
+        """quill_task: one persona turn with only the job's MCP tools offered
+        (or any tool when only is false). -> dict(ok, text, error, trace,
+        present, missing)."""
+        from . import environment as ENV, perf, selfadmin
+        ent = self.entity()
+        if ent.mcp is None:
+            return {"ok": False, "error": "MCP is not set up (menu M, or nimlab setup mcp); the task needs its tools"}
+        live = [t.get("name") for t in ent.ensure_tools()]
+        want = list(a.get("tools") or [])
+        present = [t for t in want if t in live]
+        missing = [t for t in want if t not in live]
+        if not live and ent.tools_error:
+            return {"ok": False, "error": f"the MCP tool list could not be loaded: {ent.tools_error}",
+                    "missing": missing}
+        if a.get("only", True) and not present:
+            return {"ok": False, "missing": missing,
+                    "error": "none of this job's tools are on the MCP server now: " + ", ".join(want) +
+                             ". Turn them on in the MCP admin console, or edit the job's tools."}
+        with selfadmin.identity(admin=True, who=who, source="scheduler"), ENV.channel("scheduler"), \
+                perf.time_cap(timeout), selfadmin.task_tools(present if a.get("only", True) else want,
+                                                             a.get("only", True)):
+            out = ent.turn(task_prompt(a, present), [], role="persona", max_tokens=max_tokens)
+        res = {"trace": out.get("trace") or [], "present": present, "missing": missing}
+        if out.get("blocked"):
+            return dict(res, ok=False, error=out["blocked"])
+        r = out.get("result")
+        if r is None or not getattr(r, "ok", False):
+            return dict(res, ok=False, error=getattr(r, "error", None) or "no reply")
+        return dict(res, ok=True, text=getattr(r, "text", "") or "")
+
     def cli(self, argv, timeout=600):
         env = dict(os.environ, NIMLAB_COLOR="0", NIMLAB_FROM_SCHEDULER="1")
         try:
@@ -716,6 +830,8 @@ def run_action(at, action, ctx, job=None, timeout=0, depth=0):
                 return ActionResult(False, f"Quill did not answer within {timeout} s", timed_out=True)
             ok, text = v
             return ActionResult(ok, text)
+        if at == "quill_task":
+            return run_task(action, ctx, name, timeout)
         if at == "nimlab_command":
             ok, out = ctx.cli(command_argv(action), timeout=timeout or 600)
             if ok is None:
@@ -752,6 +868,70 @@ def run_action(at, action, ctx, job=None, timeout=0, depth=0):
         return ActionResult(False, f"unknown action type {at}")
     except Exception as e:  # noqa: BLE001 - an action error is a failed run, never a crash
         return ActionResult(False, f"{type(e).__name__}: {str(e)[:500]}")
+
+
+def task_prompt(a, present):
+    """The job prompt plus a note naming the tools Quill was given."""
+    names = present if a.get("only", True) else (present or [])
+    note = ""
+    if names:
+        note = ("\n\n[JOB TOOLS] For this task you have these MCP tools: " + ", ".join(names) + ". "
+                + ("Call them with the tool-call format from your instructions. " if a.get("only", True) else
+                   "Prefer these; any other tool you have is allowed too. ")
+                + ("You must call at least one of them before you answer. " if a.get("require_tool") else "")
+                + "Afterwards say which tool you used and what happened.")
+    return a["prompt"] + note
+
+
+def _tool_report(trace):
+    """-> (calls [{name, outcome, latency_sec, reason}], lines)."""
+    calls, lines = [], []
+    for e in trace or []:
+        if not e.get("name"):
+            continue
+        c = {"name": e["name"], "outcome": e.get("outcome") or "?", "latency_sec": e.get("latency_sec"),
+             "reason": e.get("reason")}
+        calls.append(c)
+        how = {"ok": "ok", "error": "the tool returned an error", "failed": "the call failed",
+               "rejected": "not run"}.get(c["outcome"], c["outcome"])
+        extra = f" in {c['latency_sec']} s" if c["latency_sec"] is not None else ""
+        why = f": {str(c['reason'])[:120]}" if c.get("reason") else ""
+        lines.append(f"- {c['name']}: {how}{extra}{why}")
+    return calls, lines
+
+
+def run_task(action, ctx, name="adhoc", timeout=0):
+    """quill_task: Quill gets the prompt and only the picked MCP tools (or any
+    tool, with these preferred) and may call them in the tool loop. The run
+    report lists every tool call and how it went. -> ActionResult."""
+    a = action if isinstance(action, dict) else check_task(action)
+    fn = getattr(ctx, "quill_task", None)
+    if not callable(fn):
+        return ActionResult(False, "this scheduler context can't run quill_task jobs")
+    done, v = _with_timeout(lambda: fn(a, who=f"scheduler:{name}", timeout=timeout or None), timeout)
+    if not done:
+        return ActionResult(False, f"Quill did not finish the task within {timeout} s", timed_out=True)
+    v = v or {}
+    present, missing = list(v.get("present") or []), list(v.get("missing") or [])
+    calls, lines = _tool_report(v.get("trace"))
+    ran = [c for c in calls if c["outcome"] in ("ok", "error", "failed")]
+    data = {"tools_called": calls, "tools_offered": present, "tools_missing": missing}
+    if v.get("error") and not v.get("ok"):
+        out = v["error"]
+        if lines:
+            out += "\n\nTools called:\n" + "\n".join(lines)
+        return ActionResult(False, out, data=data)
+    text = str(v.get("text") or "").strip()
+    tail = []
+    tail.append("Tools called:\n" + "\n".join(lines) if lines else "Tools called: none")
+    if missing:
+        tail.append("Not on the MCP server now (not offered): " + ", ".join(missing))
+    ok = bool(v.get("ok"))
+    if ok and a.get("require_tool") and not ran:
+        ok = False
+        tail.insert(0, "FAILED: the job requires at least one tool call and Quill called none.")
+    return ActionResult(ok, (text + "\n\n" if text else "") + "\n".join(tail), data=data,
+                        notable=(not ok) or None)
 
 
 def run_chain(action, ctx, job=None, timeout=0, depth=0):

@@ -54,7 +54,8 @@ def mcp_checks(ent):
     if getattr(ent, "tools_error", None):
         return [(False, f"MCP server unavailable: {ent.tools_error}")]
     from . import mcpmenu
-    out = [(True, ent.mcp_startup_line(tools).replace("[MCP] ", ""))]
+    out = [(True, ent.mcp_startup_line(tools).replace("[MCP] ", "") +
+            " (loaded on first use on every channel: terminal, Telegram, voice, server, scheduler, heartbeat)")]
     own = (s.get("own_memory_tool") or "").strip()
     if own:
         t = next((x for x in tools or [] if x.get("name") == own), None)
@@ -264,14 +265,38 @@ def service_checks(ent=None):
     return [(True if good else "warn", f"last ./update.sh: {res} (v{rec.get('version', '?')}, {rec.get('at', '?')})")]
 
 
+def fallback_checks(ent=None):
+    """v3.8.3: model fallbacks: what is set, and what happened in the last 24 h."""
+    from . import fallback as FB
+    cluster = getattr(ent, "cluster", None) or {}
+    fs = FB.settings(cluster)
+    if not fs["enabled"]:
+        return [("warn", "Model fallbacks are off (routing_settings.fallback_enabled)")]
+    out = []
+    chain = ent.fallback_chain("persona", fs) if hasattr(ent, "fallback_chain") and ent.is_set("persona") else []
+    if chain:
+        out.append((True, "Persona fallbacks: " + " then ".join(f"{d['model']} ({k})" for k, d in chain)
+                    + f"; cooldown {int(fs['cooldown'])} s"))
+    else:
+        out.append(("warn", "No fallback model for the persona: a 429 or 503 from its model fails the reply "
+                            "-> set the Reasoning role, or add fallbacks in the roles menu (R, then F)"))
+    n, last = FB.summary(24)
+    if n:
+        out.append(("warn", f"{n} fallback(s) in the last 24 h; last: {FB.describe_event(last)} at {last.get('at')}"))
+    else:
+        out.append((True, "No fallbacks in the last 24 h"))
+    return out
+
+
 SECTIONS = [("settings", "Settings", settings_checks), ("config", "Config files", config_checks),
             ("memory", "Long-term memory", memory_checks), ("identity", "Identity pin", identity_checks),
             ("prompts", "System prompts", prompt_checks), ("processes", "Processes and locks", process_checks),
             ("telegram", "Telegram", telegram_checks), ("scheduler", "Scheduler", scheduler_checks),
             ("endpoints", "Custom endpoints", endpoint_checks), ("permissions", "File permissions", permission_checks),
             ("update", "Last update", service_checks), ("platform", "Platform", platform_checks),
-            ("mcp", "MCP tools", mcp_checks)]
-QUICK = ("settings", "config", "identity", "processes", "telegram", "scheduler", "endpoints", "permissions", "update")
+            ("fallbacks", "Model fallbacks", fallback_checks), ("mcp", "MCP tools", mcp_checks)]
+QUICK = ("settings", "config", "identity", "processes", "telegram", "scheduler", "endpoints", "permissions", "update",
+         "fallbacks")
 
 
 def collect(ent=None, mcp=True, memory=True, only=None):

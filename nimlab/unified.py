@@ -62,6 +62,34 @@ WHAT = {"vision": "see images", "ocr": "read text in images and scanned pages",
         "tts": "speak out loud", "persona": "reply at all"}
 
 
+def step_rows(trace, r, role, ent):
+    """v3.8.3: every failed model attempt of the reply step goes into the
+    trace (and so the bug record): role, model, upstream host, HTTP status,
+    a short upstream body, HTTP attempts, and the fallbacks tried. A step
+    that failed with no attempt list still gets one row naming its target."""
+    rows = list(getattr(r, "tried", None) or []) if r is not None else []
+    if r is not None and not r.ok and not rows:
+        from . import fallback as FB
+        sp = ent.spec(role) if hasattr(ent, "spec") else {}
+        rows = [FB.attempt_row(role, "primary", sp.get("model"), getattr(r, "url", None) or sp.get("endpoint") or
+                               ent._client_base() if hasattr(ent, "_client_base") else None, r,
+                               getattr(r, "attempts", None))]
+    for a in rows:
+        if a.get("ok") and a.get("kind") == "primary":
+            continue            # the successful reply row is added by the caller
+        if a.get("ok"):
+            continue
+        row = {"role": a.get("role") or role, "label": R.label(a.get("role") or role),
+               "why": "the reply" if a.get("kind") == "primary" else f"fallback ({a.get('kind')})",
+               "ok": False, "ms": a.get("ms") or 0, "target": a.get("model"), "model": a.get("model"),
+               "host": a.get("host"), "status": a.get("status"), "body": a.get("body"),
+               "attempts": a.get("attempts"), "error": f"HTTP {a.get('status')}: {a.get('body') or ''}".strip()
+               if a.get("status") else (a.get("body") or "failed")}
+        if a.get("kind") == "primary" and len(rows) > 1:
+            row["fallbacks"] = [x.get("model") for x in rows if x.get("kind") != "primary"]
+        trace.append(row)
+
+
 class Part:
     """One attachment. kind: image | audio | video | file. Exactly one of
     path (a local file) or url (http/https, handed to the model) is set."""
@@ -787,16 +815,22 @@ class Mind:
             trace.append({"role": a["role"], "label": R.label(a["role"]), "why": "ability for the reply",
                           "ok": a["ok"], "ms": int((a.get("latency") or 0) * 1000), "target": a.get("target")})
         for t in out.get("trace") or []:
-            if isinstance(t, dict) and t.get("tool"):
-                trace.append({"role": "mcp_tool", "label": "MCP tool", "why": t.get("tool"),
-                              "ok": not t.get("error"), "ms": int((t.get("latency") or 0) * 1000),
-                              "target": t.get("tool")})
+            # the tool loop's entries are {name, outcome, latency_sec}; older ones {tool, error, latency}
+            tname = t.get("name") or t.get("tool") if isinstance(t, dict) else None
+            if tname:
+                ok_t = (t.get("outcome") == "ok") if "outcome" in t else not t.get("error")
+                trace.append({"role": "mcp_tool", "label": "MCP tool", "why": tname, "ok": ok_t,
+                              "ms": int(((t.get("latency_sec") if t.get("latency_sec") is not None
+                                          else t.get("latency")) or 0) * 1000),
+                              "target": tname, **({"error": str(t.get("reason"))[:200]} if t.get("reason")
+                                                   else {})})
         res = {"ok": False, "text": "", "reply": "", "error": None, "blocked": out.get("blocked"),
                "route": first_ability or route, "text_route": route, "via": (rt or {}).get("via"),
                "route_reason": (rt or {}).get("reason"),
                "media": [], "audio": None, "transcript": transcript, "trace": trace, "missing": missing,
                "notes": skipped, "streamed": bool(out.get("streamed")), "usage": {}, "result": out.get("result"),
-               "tools": [t.get("tool") for t in (out.get("trace") or []) if isinstance(t, dict) and t.get("tool")],
+               "tools": [t.get("name") or t.get("tool") for t in (out.get("trace") or [])
+                         if isinstance(t, dict) and (t.get("name") or t.get("tool"))],
                "answered_by": out.get("answered_by"), "status": 502}
         if out.get("blocked"):
             res["text"] = res["reply"] = "I can't help with that one."
@@ -806,16 +840,24 @@ class Mind:
             mime = mimetypes.guess_type(f)[0] or "application/octet-stream"
             res["media"].append({"kind": kind_of(mime, f), "path": f, "mime": mime, "name": os.path.basename(f)})
         r = out.get("result")
+        step_rows(trace, r, out.get("answered_by") or "persona", ent)
         if r is None or not r.ok:
             pre = out.get("pre")
             err = (r.error if r is not None else None) or (pre.error if pre is not None else None) or "no reply"
-            res["error"] = f"the persona couldn't answer: {err}"
+            plain = getattr(r, "plain_error", None) if r is not None else None
+            if plain:
+                res["error"] = plain
+                res["upstream"] = f"the persona couldn't answer: {err}"
+            else:
+                res["error"] = f"the persona couldn't answer: {err}"
             res["ms"] = int((time.monotonic() - t_all) * 1000)
             return res
+        fb = getattr(r, "fallback", None)
         trace.append({"role": out.get("answered_by") or "persona", "label": R.label(out.get("answered_by") or
                                                                                      "persona"),
-                      "why": "the reply", "ok": True, "ms": int((r.latency or 0) * 1000),
-                      "target": ent.target(out.get("answered_by") or "persona")})
+                      "why": "the reply" + (f" (fallback: {fb['model']})" if fb else ""), "ok": True,
+                      "ms": int((r.latency or 0) * 1000),
+                      "target": fb["model"] if fb else ent.target(out.get("answered_by") or "persona")})
         res["ok"] = True
         res["status"] = 200
         res["usage"] = dict(r.usage or {})

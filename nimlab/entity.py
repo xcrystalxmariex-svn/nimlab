@@ -12,6 +12,7 @@ turn to a role and runs it.
 
 import os
 import re
+import threading
 import time
 
 from . import config, intent, rolemcp, roles as R
@@ -177,6 +178,9 @@ def ltm_short(ms):
         return "?"
 
 
+_FB_LOCAL = threading.local()   # v3.8.3: a persona stream that failed, for chat_step's fallbacks
+
+
 class Entity:
     def __init__(self, cluster=None, prompts=None, soul=None, client=None, roles_override=None,
                  memory=True, confirm_fn=None, log=print, role_mcp=None, fetch=None):
@@ -225,6 +229,10 @@ class Entity:
     def _build_mcp(self):
         s = self.mcp_settings
         self.mcp = MCPClient(s) if s.get("enabled") and s.get("url") else None
+        # v3.8.3: a new client has no tool list yet; ensure_tools() fetches it on first use
+        self._tools_at = None
+        self._tools_err_at = None
+        self._tools_stale = False
         if self._role_mcp_given is not None:
             self.role_mcp = self._role_mcp_given
         elif s.get("url"):
@@ -333,6 +341,7 @@ class Entity:
 
     def mcp_exposure(self):
         """(exposed tools, allowed names, blocked {name: reason}) for the chat tool loop."""
+        self.ensure_tools()
         tools = list((self.mcp.tools if self.mcp else []) or [])
         ex = self.policy().exposure(tools)
         return tools, ex["allowed"], ex["blocked"]
@@ -371,14 +380,73 @@ class Entity:
     # -- MCP --------------------------------------------------------------
     def refresh_tools(self):
         """initialize + tools/list for the chat tool loop ([] on failure)."""
-        self.tools_error = None
-        if not self.mcp:
-            return []
+        self.ensure_tools(force=True)
+        return list(self.mcp.tools or []) if (self.mcp and not self.tools_error) else []
+
+    # -- v3.8.3: MCP tools load lazily, on every channel -------------------
+    def _tools_ttl(self):
         try:
-            return self.mcp.list_tools()
-        except MCPError as e:
-            self.tools_error = str(e)
+            return max(30.0, float(self.mcp_settings.get("tools_ttl_sec", 600)))
+        except (TypeError, ValueError):
+            return 600.0
+
+    def _tools_lock(self):
+        lk = self.__dict__.get("_tools_lock_obj")
+        if lk is None:
+            lk = self.__dict__.setdefault("_tools_lock_obj", threading.RLock())
+        return lk
+
+    def ensure_tools(self, force=False):
+        """The MCP tool list, fetched on first use and cached.
+
+        Before 3.8.3 only terminal chat and doctor fetched the list, so the
+        scheduler, heartbeat, the OpenAI server (Telegram, voice calls, inline)
+        and a voice call opened straight from the menu offered Quill no MCP
+        tools at all. Now every path that builds a tool loop calls this first.
+        Thread-safe; refreshed after tools_ttl_sec (default 600 s) or after an
+        MCP error marked it stale; after a failed fetch it waits 60 s before
+        trying again so a down server never slows every turn. The error stays
+        in tools_error for doctor and /health. -> [tool]."""
+        m = self.mcp
+        if m is None:
             return []
+        if not callable(getattr(m, "list_tools", None)):
+            return list(getattr(m, "tools", None) or [])    # a test double with a fixed list
+        with self._tools_lock():
+            now = time.monotonic()
+            at = self.__dict__.get("_tools_at")
+            if not force:
+                if at is not None and not self.__dict__.get("_tools_stale") and now - at < self._tools_ttl():
+                    return list(m.tools or [])
+                err_at = self.__dict__.get("_tools_err_at")
+                if err_at is not None and now - err_at < 60.0 and not self.__dict__.get("_tools_stale"):
+                    return list(m.tools or [])
+            try:
+                m.list_tools()
+                self.tools_error = None
+                self._tools_at, self._tools_err_at, self._tools_stale = now, None, False
+            except Exception as e:  # noqa: BLE001 - MCP down: keep the reason, never break the turn
+                self.tools_error = str(e)[:300]
+                self._tools_err_at, self._tools_stale = now, False
+                if callable(self.log):
+                    try:
+                        self.log(f"[MCP] tool list unavailable: {self.tools_error}")
+                    except Exception:  # noqa: BLE001
+                        pass
+            return list(m.tools or [])
+
+    def mark_tools_stale(self):
+        """After an MCP error the next turn fetches the tool list again."""
+        self._tools_stale = True
+
+    def tools_status(self):
+        """For doctor and /health: dict(enabled, loaded, count, error, age_sec)."""
+        m = self.mcp
+        at = self.__dict__.get("_tools_at")
+        return {"enabled": m is not None, "loaded": at is not None,
+                "count": len(getattr(m, "tools", None) or []) if m else 0,
+                "error": self.tools_error,
+                "age_sec": round(time.monotonic() - at, 1) if at is not None else None}
 
     def prompt_checks(self, log=print, migrate=True):
         """Startup: rewrite (once, with a backup) prompt sentences that tell a
@@ -838,10 +906,120 @@ class Entity:
 
     # -- convenience wrappers (testbed commands, judge) --------------------
     def chat_step(self, role, messages, temperature=0.7, max_tokens=1024, with_tools=True, system=None):
+        """One chat call for a text role, with v3.8.3 model fallbacks (see
+        nimlab.fallback): on 429 / 5xx / timeout the same step goes to the
+        reasoning model (persona), then the role's secondary list. r.tried
+        lists every attempt (role, model, host, status, short body, retries)."""
+        from . import fallback as FB
         inp = dict(messages=messages, temperature=temperature, max_tokens=max_tokens, with_tools=with_tools)
         if system is not None:
             inp["system"] = system
-        return self.run_role(role, **inp)
+        fs = FB.settings(self.cluster)
+        key = R.LEGACY_MAP.get(role, role) if role not in R.BY_KEY and role not in R.EXTRA_ROLES else role
+        if not fs["enabled"] or not self.is_set(key) or self.backend(key) != R.MODEL:
+            return self.run_role(role, **inp)
+        sp = self.spec(key)
+        chain = self.fallback_chain(key, fs)
+        pre = getattr(_FB_LOCAL, "failed", None)
+        _FB_LOCAL.failed = None
+        tried = []
+        first = None
+        cooling = bool(chain) and FB.cooling(key)
+        if pre and pre[0] == key:
+            first = pre[1]
+            tried.append(pre[2])
+        elif not cooling:
+            first = self.run_role(role, **inp)
+            tried.append(FB.attempt_row(key, "primary", sp.get("model"), getattr(first, "url", None) or
+                                        self._url(sp) or self._client_base(), first,
+                                        getattr(first, "attempts", None)))
+            if first.ok or not chain or not FB.should_fall_back(first):
+                first.tried = tried
+                if not first.ok and FB.should_fall_back(first):
+                    first.plain_error = FB.plain_failure(tried)     # busy/down, and no fallback is set
+                return first
+        if first is not None and not FB.should_fall_back(first):
+            first.tried = tried
+            return first
+        fb_inp = dict(inp, messages=FB.strip_reasoning(messages))
+        if "system" not in fb_inp:
+            fb_inp["system"] = self.build_system_prompt(key, with_tools=with_tools)
+        handler = getattr(self, f"_m_{key}", None) or self._m_text
+        from . import perf
+        for kind, fsp in chain:
+            with perf.stage(key, target=f"{fsp['model']} (fallback)") as st:
+                try:
+                    r = handler(key, fsp, fb_inp)
+                except perf.Timeout as e:
+                    r = ModelResult(False, error=str(e), status=504)
+                except (OSError, ValueError) as e:
+                    r = ModelResult(False, error=str(e))
+                st["ok"] = bool(r.ok)
+            tried.append(FB.attempt_row(key, kind, fsp["model"], getattr(r, "url", None) or self._url(fsp) or
+                                        self._client_base(), r, getattr(r, "attempts", None)))
+            if r.ok:
+                r.tried = tried
+                r.fallback = {"role": key, "model": fsp["model"], "kind": kind}
+                if first is not None:   # the primary really failed just now: rest it, and log it
+                    FB.start_cooldown(key, fs["cooldown"])
+                    FB.log_event({"role": key, "from_model": sp.get("model"), "status": tried[0].get("status"),
+                                  "body": tried[0].get("body"), "host": tried[0].get("host"),
+                                  "to_model": fsp["model"], "kind": kind, "tried": len(tried)})
+                    if callable(self.log):
+                        self.log(f"[fallback] {key}: {sp.get('model')} failed ({tried[0].get('status')}); "
+                                 f"answered by {fsp['model']}")
+                return r
+        if first is None:   # cooling down and every fallback failed: the primary gets its turn after all
+            first = self.run_role(role, **inp)
+            tried.append(FB.attempt_row(key, "primary", sp.get("model"), getattr(first, "url", None) or
+                                        self._url(sp) or self._client_base(), first,
+                                        getattr(first, "attempts", None)))
+            if first.ok:
+                first.tried = tried
+                return first
+        FB.log_event({"role": key, "from_model": sp.get("model"), "status": tried[0].get("status"),
+                      "body": tried[0].get("body"), "host": tried[0].get("host"), "to_model": None,
+                      "tried": len(tried)})
+        first.tried = tried
+        plain = FB.plain_failure(tried)
+        if plain:
+            first.plain_error = plain
+        return first
+
+    def _client_base(self):
+        f = getattr(self.client, "integrate", None)
+        try:
+            return f() if callable(f) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def fallback_chain(self, key, fs=None):
+        """[(kind, spec)] tried in order when the role's model fails:
+        the reasoning model (persona only), then roles.<key>.fallbacks."""
+        from . import fallback as FB
+        fs = fs or FB.settings(self.cluster)
+        sp = self.spec(key)
+        out, seen = [], {sp.get("model")}
+        if key == "persona" and fs["to_reasoning"] and self.is_set("reasoning") \
+                and self.backend("reasoning") == R.MODEL:
+            rsp = self.spec("reasoning")
+            if rsp.get("model") not in seen:
+                d = dict(sp, model=rsp["model"])
+                d.pop("endpoint", None)
+                if rsp.get("endpoint"):
+                    d["endpoint"] = rsp["endpoint"]
+                out.append(("reasoning", d))
+                seen.add(rsp["model"])
+        for f in FB.secondary_list(sp):
+            if f["model"] in seen:
+                continue
+            d = dict(sp, model=f["model"])
+            d.pop("endpoint", None)
+            if f.get("url"):
+                d["endpoint"] = f["url"]
+            out.append(("secondary", d))
+            seen.add(f["model"])
+        return out
 
     def respond(self, role, history, temperature=0.7, max_tokens=1024, use_tools=True, system_extra=None,
                 keep_role=False):
@@ -878,6 +1056,8 @@ class Entity:
                 last["r"] = r
             return (r.text if r.ok else ""), r.ok
 
+        if use_tools:
+            self.ensure_tools()
         box = SA.ToolBox(self, self.mcp if (self.mcp and self.mcp.tools) else None) if use_tools else None
         if box is not None and box.tools:
             s = self.mcp_settings
@@ -1142,8 +1322,17 @@ class Entity:
             return True
         if self.memory_search_mode() == "on" and self.builtin_tools():
             return True
-        if not (self.mcp and self.mcp.tools) or self.is_set("coding"):
+        if self.mcp is not None:
+            self.ensure_tools()
+        if not (self.mcp and self.mcp.tools):
             return False
+        if self.is_set("coding"):
+            # v3.8.3: a quill_task job, or a scheduled/heartbeat turn (always run as an admin),
+            # still lets the persona use the tools itself; other channels leave tool work to coding
+            from . import environment as ENV
+            trusted = SA.task_scope() is not None or (SA.current().admin and ENV.current_channel() == "scheduler")
+            if not trusted:
+                return False
         return bool(self.mcp_exposure()[1])   # only when the policy lets at least one MCP tool through
 
     def persona_reply(self, history, on_token=None, client_system=None, temperature=0.7, max_tokens=1024):
@@ -1153,7 +1342,9 @@ class Entity:
         use_tools = self.persona_tools()
         gs = self.cluster.get("guard_settings", {})
         guarded = gs.get("check_output") and self.is_set("guard_translate")
-        if on_token and not use_tools and not guarded and self.backend("persona") == R.MODEL:
+        from . import fallback as FB
+        cooling = FB.cooling("persona") and bool(self.fallback_chain("persona"))
+        if on_token and not use_tools and not guarded and self.backend("persona") == R.MODEL and not cooling:
             sp = self.spec("persona")
             system = self.build_system_prompt("persona", with_tools=False, extra=client_system)
             got = []
@@ -1186,6 +1377,12 @@ class Entity:
                         return r2, [], True
                 return r, [], True
             # nothing streamed (backend ignored stream, or failed first): one normal call
+            if not r.ok and FB.should_fall_back(r) and self.fallback_chain("persona"):
+                # v3.8.3: the stream already failed after its retries; go straight to the fallbacks
+                _FB_LOCAL.failed = ("persona", r, FB.attempt_row("persona", "primary", sp.get("model"),
+                                                                 getattr(r, "url", None) or self._url(sp) or
+                                                                 self._client_base(), r,
+                                                                 getattr(r, "attempts", None)))
         result, trace = self.respond("persona", history, temperature, max_tokens, use_tools=use_tools,
                                      system_extra=client_system, keep_role=True)
         return result, trace, False

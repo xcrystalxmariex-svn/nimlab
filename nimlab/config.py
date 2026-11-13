@@ -105,6 +105,7 @@ DEFAULT_CLUSTER = {
         "tool_timeout_sec": 20,
         "max_result_chars": 8000,
         "max_response_bytes": 1000000,
+        "tools_ttl_sec": 600,
     },
     "memory_settings": {"recall_top_k": 6, "similarity_threshold": 0.45, "rerank_candidates": 16,
                         "recent_on_recall_ask": 3, "search_threshold": 0.3, "trace": True,
@@ -119,12 +120,15 @@ DEFAULT_CLUSTER = {
                          "reasoning_gate": True, "reasoning_min_chars": 4000, "reasoning_keywords": True,
                          "chat_fast_path": True, "chat_max_words": 16, "router_timeout_sec": 8,
                          # v3.7.1 prompts: the live ENVIRONMENT block, and the one-time prompt cleanup
-                         "environment_block": True, "migrate_prompts": True},
+                         "environment_block": True, "migrate_prompts": True,
+                         # v3.8.3 model fallbacks (nimlab/fallback.py)
+                         "fallback_enabled": True, "fallback_to_reasoning": True, "fallback_cooldown_sec": 300},
     "discovery_settings": {
         "page_ttl_hours": 72,
         "spec_ttl_hours": 72,
         "probe_workers": 3,
         "probe_timeout_sec": 20,
+        "probe_rpm": 30,
         "host_delays_sec": {"build.nvidia.com": 10, "docs.api.nvidia.com": 3, "api.ngc.nvidia.com": 1},
         "include_retired_in_sweep": False,
         "playground_uses_catalog": True,

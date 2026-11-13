@@ -138,6 +138,9 @@ class ModelResult:
         self.error = error
         self.status = status
         self.raw = raw
+        self.url = None          # v3.8.3: the upstream URL a failure came from
+        self.attempts = None     # HTTP attempts (1 + retries)
+        self.tried = []          # v3.8.3: every model tried for this step, fallbacks included
 
     @property
     def completion_tokens(self):
@@ -157,8 +160,11 @@ class ModelResult:
 
 
 def _fail(res, prefix=""):
-    return ModelResult(False, latency=res.latency, error=(prefix + res.describe()), status=res.status,
-                       raw=res.json())
+    r = ModelResult(False, latency=res.latency, error=(prefix + res.describe()), status=res.status,
+                    raw=res.json())
+    r.url = getattr(res, "url", None)               # v3.8.3: for the trace/bug record (host only is kept)
+    r.attempts = getattr(res, "attempts", None)
+    return r
 
 
 def image_to_data_url(path_or_url):

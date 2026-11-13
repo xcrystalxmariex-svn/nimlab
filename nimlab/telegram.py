@@ -753,7 +753,7 @@ class Connector:
             stop.set()
             self.log(f"[telegram] error for {uid}: {type(e).__name__}: {e}")
             try:
-                self.send(chat_id, "Sorry, something went wrong on my side: " + _short(e))
+                self.send(chat_id, error_text(e))
             except Exception:  # noqa: BLE001
                 pass
         finally:
@@ -861,11 +861,24 @@ class Connector:
 
 def _short(e):
     s = str(e)
-    if "401" in s:
+    if "401" in s and not PLAIN_FAIL.search(s):
         return "the server refused the key."
     if "Connection refused" in s or "urlopen" in s:
         return "the testbed server is not running."
+    s = re.sub(r"^server 5\d\d: ", "", s)          # v3.8.3: no raw "server 502:" in the chat
+    if PLAIN_FAIL.search(s):
+        return (s[:500] + "...") if len(s) > 500 else s
     return (s[:160] + "...") if len(s) > 160 else s
+
+
+PLAIN_FAIL = re.compile(r"^(NVIDIA's model|The model at) ")
+
+
+def error_text(e):
+    """What the chat shows when a reply failed. When every model failed the
+    server already says why in plain words, so no 'went wrong on my side'."""
+    s = _short(e)
+    return s if PLAIN_FAIL.search(s) else "Sorry, something went wrong on my side: " + s
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,24 @@
 # Changes
 
+## v3.8.3
+
+MCP tools on every channel, prompt-task jobs with picked tools, model fallbacks, failed steps in bug reports, and a paced setup sweep.
+
+**MCP tools on every channel (the FREE TIME bug).** Only terminal chat and doctor ever fetched the MCP tool list (`refresh_tools()`); a new `MCPClient` starts with no tools. Scheduler jobs, the heartbeat, the OpenAI server (Telegram, Telegram voice, inline, voice-call page) and a voice call opened straight from the menu therefore offered no MCP tools. `Entity.ensure_tools()` now loads the list on first use, on every path that builds a tool loop: thread-safe, cached for `mcp_settings.tools_ttl_sec` (600 s), refreshed after an MCP error, a 60 s back-off after a failed fetch, the reason kept for doctor. The MCP trace rows in the server's response now name the tool (they read a key the tool loop never wrote). With a coding role set, scheduled, heartbeat and prompt-task turns still let the persona use tools.
+
+**Prompt task with tools (`quill_task`).** A prompt plus MCP tools picked for the job; only those are offered (or any tool, these preferred), with an optional "must call a tool" check. Scheduler menu 7 (own task) and 8 (ready-made hourly Free time job) with a paged multi-select picker over the live tool list; `nimlab jobs tools`, `nimlab jobs free-time --tools a,b`, `nimlab jobs create --tools a,b [--any-tool] [--require-tool]`; Telegram `/jobs tools` and `/jobs freetime a,b` (owner); Quill's self_jobs tool knows the type. Run reports list every tool called and how it went.
+
+**Model fallbacks.** 429, any 5xx (including the upstream "content safety screening is temporarily unavailable" 503), timeouts and dropped connections, after the HTTP retries, go to the Reasoning model with the persona prompt (persona), then the role's secondary list (roles menu R, then F), then a cooldown before the primary is tried first again. Logged to `data/fallbacks.jsonl`; shown in doctor and `/health`. When every model fails Telegram names the cause in plain words instead of "server 502: ... HTTP 503".
+
+**Failed steps in the trace and bug record (B-894BF1).** The failing persona step was missing from the trace, so the report only showed the router. Every failed attempt now carries role, model, upstream host/path (no keys), status, a short body, attempts and the fallbacks tried.
+
+**Paced sweep.** The 200-OK sweep and spec rebuild are paced to `discovery_settings.probe_rpm` (30 a minute; `NIMLAB_SWEEP_RPM`), honouring Retry-After.
+
+**Updating from git.** `cd <your clone> && git pull && bash update.sh`; nothing depends on the folder's name.
+
+**New tests.** `tests/test_v383.py`: a fresh Entity with a fake MCP server calls a tool on its first turn on each channel (terminal, Telegram owner and guest, voice, server, scheduler quill_prompt, heartbeat, the full server path), caching/TTL/error refresh, a down server, concurrent first use, the coding-role rule; quill_task checks, only/any modes, must-call, missing and failing tools, the Free time template, a scheduler run end to end, CLI, menu picker and Telegram /jobs; fallbacks on 429/5xx and the exact safety-screening 503 body, order, cooldown, no fallback on 4xx, the plain-words message, the roles menu, doctor; the failed persona step in the trace and the bug record with its model and upstream host; the rate limiter, Retry-After and a paced prober.
+
+
 ## v3.8.2
 
 Updating without a reinstall, custom endpoints, one routing path, health and safe repair, a rebuilt menu, and the fixes from the 4-AI audit of 3.8.1.

@@ -472,15 +472,16 @@ The server can be reached from outside your network through `cloudflared`. The e
 - `serve tunnel install` installs cloudflared when it is missing: `pkg install cloudflared` on Termux, else the official release binary into `~/.local/bin`.
 - If cloudflared quits, the server keeps running: you get a warning and it retries after 10 s, 30 s, 60 s, 120 s, … (five tries), then the status says it gave up.
 
-## Updating (update.sh, v3.8.2)
+## Updating (update.sh, v3.8.2; git, v3.8.3)
 
-From 3.8.2 on, an update is two steps and keeps everything you set up:
+From 3.8.2 on, an update keeps everything you set up. From a git clone (the folder can have any name; `nimlab` is what a plain clone makes):
 
 ```bash
-cd /data/data/com.termux/files/nvidia          # the folder that holds nvidia_nim_test_lab
-unzip -o nimlab_3.8.2.zip                      # over the old files
-cd nvidia_nim_test_lab && bash update.sh
+cd ~/nimlab                 # your clone, wherever it is
+git pull && bash update.sh
 ```
+
+From a release zip instead: unzip it over the folder (`unzip -o nimlab_3.8.3.zip`, then copy the files from the `nvidia_nim_test_lab` folder it makes over your clone if your folder has another name), then `bash update.sh` inside it. Nothing in Nim Lab depends on the folder's name.
 
 `update.sh` turns off auto-restart first (termux-services/runit, systemd or the built-in supervisor), so nothing comes back while it works; stops only this user's Nim Lab processes (supervisor, server, Telegram poller, scheduler, the tunnel it started), never other Termux work; waits for each to exit before it forces anything; then starts the service once and runs the health check. It prints **GOOD TO GO** only when every check passes, and otherwise the failing check and its fix. Two copies never run at once.
 
@@ -489,6 +490,49 @@ cd nvidia_nim_test_lab && bash update.sh
 - Keys, settings and memory (`~/.config/nimlab`, `data/`) are never touched. **Service & update > Clean restart** runs the same steps without a new zip.
 
 A fresh install (delete the folder, unzip, `./start.sh`) still works too; it just means running the setup steps again for anything kept in `data/`.
+
+## MCP tools on every channel (v3.8.3)
+
+Before 3.8.3 only terminal chat (and doctor) fetched the MCP server's tool list. Scheduler jobs, the heartbeat, the OpenAI server (so Telegram, Telegram voice notes, inline answers and the voice-call page) and a voice call opened straight from the menu offered Quill no MCP tools at all, which is why a scheduled "pick a tool and play with it" job got "I can't access the tools".
+
+Now the tool list loads the first time any channel needs it (`Entity.ensure_tools()`): thread-safe, fetched once and reused for `mcp_settings.tools_ttl_sec` (default 600 s), fetched again after an MCP error, and after a failed fetch it waits 60 s before trying again so a down server never slows every turn. The reason it failed is kept for `nimlab doctor` and `/health`.
+
+The MCP admin console stays the only authority on which tools exist: whatever the endpoint lists is offered. When a coding role is set, a turn from an ordinary (non-owner) chat leaves tool work to the coding role; scheduled jobs, the heartbeat, prompt-task jobs and owner turns can still use the tools directly.
+
+## Prompt tasks with tools and the Free time job (v3.8.3)
+
+A **prompt task** (`quill_task`) is a job with a prompt and the MCP tools you pick for it. During the run Quill is offered only those tools (plus `memory_search` if it is on) and can call them in its tool loop.
+
+- **Only these tools** (default) or **Any tool** (the picked ones are named as preferred).
+- **Must call a tool** (optional): the run is marked failed if Quill called none.
+- The run report lists every tool called and how it went (ok, the tool returned an error, the call failed, not run), plus picked tools the server no longer lists. Results go to Telegram, memory or the log as usual.
+
+**From the menu:** main menu **W** (Scheduler), then **8** for the ready-made **Free time** job (hourly; Quill picks one of the tools you choose, plays with it and says what it did; result to Telegram), or **7** for your own prompt task. The tool picker shows the live tool list from the MCP server, 10 to a page: type numbers to tick or untick (`1,3,5-7`), `n`/`p` to page, `/word` to filter, `d` when done. After it is created, `r` runs it once now.
+
+**From the CLI:**
+
+```bash
+nimlab jobs tools                                   # the tools the server offers now
+nimlab jobs free-time --tools beat_lab,generate_creative_art
+nimlab jobs create fun --schedule "FREQ=HOURLY;INTERVAL=1" --do "Play a game" \
+    --tools beat_lab,simulate_strategy_games --require-tool      # --any-tool to allow others
+```
+
+**From Telegram (owner):** `/jobs tools`, then `/jobs freetime tool_a,tool_b`. `/jobs` shows each prompt task's tools. Quill can create them too when you ask ("make me a free time job with the music tools").
+
+## Model fallbacks (v3.8.3)
+
+When a text role's model can't answer after the HTTP client's own retries (429, any 5xx including an upstream "content safety screening is temporarily unavailable" 503, a timeout or a dropped connection), the same step goes to:
+
+1. the **Reasoning role's model** (persona only), with the persona's prompt and soul and no reasoning text carried over;
+2. the role's **secondary list**, in order: roles menu **R**, then **F** (Fallback models), which also sets the cooldown and switches;
+3. once a fallback has answered, the primary rests for `routing_settings.fallback_cooldown_sec` (300 s) and the step starts at the fallbacks; then the primary is tried first again.
+
+A 4xx that means the request or the key is wrong does not fall back. Every fallback is logged (`data/fallbacks.jsonl`) and shown in `nimlab doctor` (Model fallbacks) and Telegram `/health`. When every model fails, Telegram says so in plain words, for example "NVIDIA's model was unavailable (HTTP 503: content safety screening is temporarily unavailable). I tried A and B; none of them answered." instead of "server 502: ...".
+
+**Failed steps in bug reports.** A failed step is always in the turn's trace and its bug record: role, model, upstream host and path (never a key or query string), HTTP status, a short upstream body, HTTP attempts, and the fallbacks tried.
+
+**Paced setup sweep.** The 200-OK sweep and the spec rebuild send at most `discovery_settings.probe_rpm` requests a minute (default 30) across all workers, and a 429's Retry-After pauses every worker, so setup doesn't use up NVIDIA's free-tier per-minute limit.
 
 ## Custom endpoints (v3.8.2)
 
@@ -533,7 +577,7 @@ Only people on the allowlist get answers; others get a polite refusal, or nothin
 
 One answer per message (v3.7.1): only one poller runs per bot, and every poller and the webhook record each handled `update_id` in `data/telegram/last_update.json` (locked, per bot) and skip anything at or below it, so a stray second poller or an unconfirmed offset never sends a reply twice. The offset is confirmed when a poller or `allow --capture` ends, and capture stops as soon as the owner is saved.
 
-### Telegram commands (v3.8.0, v3.8.1, v3.8.2)
+### Telegram commands (v3.8.0, v3.8.1, v3.8.2, v3.8.3)
 
 `/start` and `/help` greet you and list the commands. Owner-only commands (the allowlist's owner): `/status`, `/test`, `/roles`, `/recall <words>`, `/mcp`, `/tunnel`, `/jobs`, `/heartbeat`, `/voice`, `/autoplay`, `/bugs`, `/logs` and `/service`. Anyone allowed can use `/model` (view), `/remember <text>`, `/new` (reset the context), `/cancel` and `/id`.
 
@@ -925,6 +969,8 @@ Every command, grouped. The launcher's main menu has the same list under **Comma
 - `nimlab jobs history [name]`: Run history: status, time, bug IDs
 - `nimlab jobs next <name>`: The next run times
 - `nimlab jobs audit`: Every change to jobs and suggested actions, with who made it
+- `nimlab jobs tools`: The MCP tools the server offers now, to pick for a prompt task
+- `nimlab jobs free-time --tools a,b`: Ready-made hourly Free time job with the tools you pick
 - `nimlab heartbeat status`: Heartbeat on/off, next run, limits, the last report
 - `nimlab heartbeat run-now`: One heartbeat now: Quill decides and acts *(real requests)*
 - `nimlab heartbeat enable`: Turn the heartbeat on
@@ -1077,6 +1123,7 @@ In config_cluster.json.
 - `mcp_settings.tool_timeout_sec` (default `20`): Time limit for one MCP tool call.
 - `mcp_settings.max_result_chars` (default `8000`): A tool result longer than this is cut before it reaches the model.
 - `mcp_settings.max_response_bytes` (default `1000000`): Largest MCP HTTP response read.
+- `mcp_settings.tools_ttl_sec` (default `600`): How long the MCP tool list is reused before it is fetched again (v3.8.3; it is also fetched again after an MCP error).
 
 ### memory_settings
 
@@ -1181,6 +1228,9 @@ In config_cluster.json.
 - `routing_settings.router_timeout_sec` (default `8`): The router's time limit on a text turn; on timeout the rules decide.
 - `routing_settings.environment_block` (default `true`): Add the live ENVIRONMENT section (memory, tools, channel, voice rules) to the persona, reasoning and coding prompts every turn.
 - `routing_settings.migrate_prompts` (default `true`): Once, remove instructions for tools that don't exist (like quill_mem) from config_system_prompts.json, after a backup.
+- `routing_settings.fallback_enabled` (default `true`): When a role's model fails (429, any 5xx, a timeout) after its retries, try fallback models (v3.8.3).
+- `routing_settings.fallback_to_reasoning` (default `true`): The persona's first fallback is the Reasoning role's model, with the persona's prompt and soul.
+- `routing_settings.fallback_cooldown_sec` (default `300`): After a fallback answered, the primary model rests this long before it is tried first again.
 
 ### discovery_settings
 
@@ -1190,6 +1240,7 @@ In config_cluster.json.
 - `discovery_settings.spec_ttl_hours` (default `72`): How long a downloaded API spec is reused.
 - `discovery_settings.probe_workers` (default `3`): How many models `sweep` probes at the same time.
 - `discovery_settings.probe_timeout_sec` (default `20`): Time limit for one sweep probe.
+- `discovery_settings.probe_rpm` (default `30`): Requests a minute for the setup 200-OK sweep and the spec rebuild, so they stay under NVIDIA's free-tier limit; a 429's Retry-After pauses every worker. `NIMLAB_SWEEP_RPM` overrides it; 0 turns pacing off (v3.8.3).
 - `discovery_settings.host_delays_sec` (default `{"build.nvidia.com": 10, "docs.api.nvidia.com": 3, "api.n...`): Seconds between requests to each host while crawling.
 - `discovery_settings.include_retired_in_sweep` (default `false`): Also probe models the catalog marks as retired.
 - `discovery_settings.playground_uses_catalog` (default `true`): Let the playground pick models from the downloaded catalog.

@@ -5,4 +5,4 @@ Stdlib-only (Python 3.8+), Termux-friendly. Every tool in the lab
 goes through this package for networking, keys, routing and model calls.
 """
 
-__version__ = "3.8.2"
+__version__ = "3.8.3"

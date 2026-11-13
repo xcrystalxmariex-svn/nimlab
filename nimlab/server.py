@@ -1015,6 +1015,10 @@ class TestbedApp:
             ent.confirm_fn = saved_confirm
         trace = [{k: t.get(k) for k in ("role", "label", "why", "ok", "ms", "target", "error") if k in t}
                  for t in res["trace"]]
+        # v3.8.3: the bug record keeps the failed step's model, upstream host, status, body and fallbacks
+        bug_trace = [{k: t.get(k) for k in ("role", "label", "why", "ok", "ms", "target", "error", "model", "host",
+                                              "status", "body", "attempts", "fallbacks") if k in t}
+                     for t in res["trace"]]
         info = {"route": res.get("route"), "text_route": res.get("text_route"), "via": res.get("via"),
                 "route_reason": res.get("route_reason"),
                 "answered_by": res.get("answered_by"), "tools": res.get("tools") or []}
@@ -1038,7 +1042,8 @@ class TestbedApp:
             raise ApiError(res.get("status") or 502, res.get("error") or "the entity produced no reply",
                            etype="upstream_error" if (res.get("status") or 502) >= 500 else "invalid_request_error",
                            code="role_not_set" if "isn't set" in (res.get("error") or "") else "upstream_error",
-                           trace=res.get("trace"), upstream=res.get("error"), stages=res.get("stages_ms"))
+                           trace=bug_trace, upstream=res.get("upstream") or res.get("error"),
+                           stages=res.get("stages_ms"))
         txt = res["text"]
         links = []
         for m in res["media"]:

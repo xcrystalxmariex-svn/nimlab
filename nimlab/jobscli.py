@@ -9,7 +9,8 @@ from . import routing
 from . import schedule as S
 from . import scheduler as SC
 
-JOB_ACTIONS = ["list", "show", "create", "edit", "run", "enable", "disable", "delete", "history", "next", "audit"]
+JOB_ACTIONS = ["list", "show", "create", "edit", "run", "enable", "disable", "delete", "history", "next", "audit",
+               "tools", "free-time"]
 HB_ACTIONS = ["status", "run-now", "enable", "disable", "schedule", "actions", "reports", "set"]
 ACT_SUB = ["list", "show", "add", "edit", "remove", "enable", "disable"]
 HB_SETTINGS = ("max_actions", "token_budget", "time_budget_sec", "escalate_failures_to", "context_chars")
@@ -63,6 +64,118 @@ def action_screen(x, num=None):
     return [paint.job_line(head[:w]), C.dim(tail[:w])]
 
 
+def _short(d, n=70):
+    d = " ".join(str(d or "").split())
+    return d if len(d) <= n else d[:n - 1] + "…"
+
+
+def pick_tools(q, say, tools, chosen=None, page_size=10):
+    """Numbered, paged multi-select over the live MCP tool list.
+    Type numbers (1,3,5-7) to toggle, n/p to page, /word to filter,
+    a to clear the filter, d when done, b to cancel. -> [names] or None."""
+    from . import colors as C
+    names = [t.get("name") for t in tools if t.get("name")]
+    desc = {t.get("name"): t.get("description") for t in tools}
+    chosen = [n for n in (chosen or [])]
+    flt, page = "", 0
+    while True:
+        view = [n for n in names if flt.lower() in (n + " " + str(desc.get(n) or "")).lower()]
+        pages = max(1, (len(view) + page_size - 1) // page_size)
+        page = min(max(page, 0), pages - 1)
+        say("")
+        say(C.header(f"PICK TOOLS  page {page + 1}/{pages}" + (f"  filter '{flt}'" if flt else "")))
+        for i in range(page * page_size, min(len(view), (page + 1) * page_size)):
+            n = view[i]
+            mark = "[x]" if n in chosen else "[ ]"
+            say(f"  {i + 1:>3}) {mark} {n}  {C.dim(_short(desc.get(n), 50))}")
+        if not view:
+            say("  (no tools match)")
+        say("  chosen: " + (", ".join(chosen) or "none"))
+        c = q("Numbers to toggle (1,3,5-7)  n) next  p) prev  /word) filter  a) all  d) done  b) cancel: ")
+        if c is None or c in ("b", "q"):
+            return None
+        if c in ("d", ""):
+            return chosen
+        if c == "n":
+            page += 1
+        elif c == "p":
+            page -= 1
+        elif c == "a":
+            flt, page = "", 0
+        elif c.startswith("/"):
+            flt, page = c[1:].strip(), 0
+        else:
+            for part in c.replace(" ", "").split(","):
+                lo, _, hi = part.partition("-")
+                if not lo.isdigit() or (hi and not hi.isdigit()):
+                    continue
+                for k in range(int(lo), int(hi or lo) + 1):
+                    if 1 <= k <= len(view):
+                        n = view[k - 1]
+                        if n in chosen:
+                            chosen.remove(n)
+                        else:
+                            chosen.append(n)
+
+
+def _new_task(q, say, name=None, sched=None, template=False):
+    """Scheduler menu: a prompt task with tools, step by step."""
+    from . import colors as C
+    try:
+        tools = SC.live_mcp_tools()
+    except SC.JobError as e:
+        say(f"[x] {e}")
+        return None
+    if not tools:
+        say("[x] The MCP server offers no tools right now. Turn some on in its admin console.")
+        return None
+    if template:
+        say(C.dim("Free time: every hour Quill picks one of the tools you choose, plays with it and tells you "
+                  "what it did."))
+    name = name or q(f"Name [{'free-time' if template else ''}]: ") or ("free-time" if template else "")
+    if not name:
+        return None
+    if not template and not sched:
+        say("Schedule: FREQ=HOURLY;INTERVAL=1, FREQ=DAILY;BYHOUR=7, '*/30 * * * *' or 'at 2026-11-14 07:00'.")
+        sched = q("Schedule: ")
+        why = S.validate(sched or "")
+        if why:
+            say(f"[x] {why}")
+            return None
+    say("Choose the tools for this job:")
+    picked = pick_tools(q, say, tools)
+    if picked is None:
+        say("Cancelled.")
+        return None
+    if template:
+        spec = SC.free_time_template(picked, name=name)
+        if not picked:
+            say("[x] pick at least one tool for Free time")
+            return None
+    else:
+        prompt = q("Prompt (what Quill should do): ")
+        if not prompt:
+            return None
+        say(C.entry(1, "Only these tools", "(default)", pad=20))
+        say(C.entry(2, "Any tool", "these preferred", pad=20))
+        only = (q("Tool access [1]: ") or "1") != "2"
+        req = (q("Fail the run if Quill calls no tool? [y/N] ") or "").lower() in ("y", "yes")
+        spec = {"name": name, "schedule": sched, "action_type": "quill_task",
+                "action": {"prompt": prompt, "tools": picked, "only": only, "require_tool": req}}
+    dest = q(f"Result to (telegram, memory, log, none) [{'telegram' if template else 'log'}]: ")
+    if dest:
+        spec["result_to"] = dest
+    elif not template:
+        spec["result_to"] = None
+    j = SC.create_job(spec, who="menu", source="cli")
+    say(f"[ok] created {j['name']}: {S.describe(j['schedule'])}; tools {', '.join(picked) or 'any'}; "
+        f"next run {S.fmt(j['state'].get('next_run'))}")
+    hint = SC.not_running_hint() if j.get("enabled") else ""
+    if hint:
+        say("    " + hint)
+    return j
+
+
 def _tz():
     try:
         S.set_timezone(SC.settings().get("timezone") or "")
@@ -82,6 +195,8 @@ def show_lines(j):
     st = j.get("state") or {}
     act = j.get("action")
     act_s = json.dumps(act, ensure_ascii=False) if isinstance(act, (dict, list)) else str(act or "-")
+    if j.get("action_type") == "quill_task" and isinstance(act, dict):
+        act_s = SC.task_brief(act)
     out = [f"{j['name']}: {j.get('description') or ''}".rstrip(": "),
            f"  enabled      : {'yes' if j.get('enabled') else 'no'} (state {st.get('state') or '-'}"
            + (f": {st['state_reason']}" if st.get("state_reason") else "") + ")",
@@ -126,9 +241,47 @@ def spec_from_args(a, partial=False):
             m.update(json.loads(a.json))
         except ValueError as e:
             raise SC.JobError(f"--json is not JSON ({e})") from None
+    task = task_from_args(a, m)
+    if task is not None:
+        m["action"] = task
+        m.setdefault("action_type", "quill_task")
     if not partial:
         m.setdefault("action_type", "quill_prompt")
     return m
+
+
+def task_from_args(a, m, existing=None):
+    """--tools / --any-tool / --only-tools / --require-tool for quill_task.
+    On edit the job's current task is the base. -> dict or None."""
+    tools = getattr(a, "tools", None)
+    flags = {"only": False if getattr(a, "any_tool", False) else (True if getattr(a, "only_tools", False) else None),
+             "require_tool": True if getattr(a, "require_tool", False) else
+             (False if getattr(a, "no_require_tool", False) else None)}
+    is_task = m.get("action_type") == "quill_task" or tools is not None or any(v is not None for v in flags.values())
+    if not is_task:
+        return None
+    base = {}
+    if existing is None and getattr(a, "name", None) and getattr(a, "action", "") == "edit":
+        try:
+            cur = SC.get_job(a.name)
+            if cur.get("action_type") == "quill_task" and isinstance(cur.get("action"), dict):
+                base = dict(cur["action"])
+        except SC.JobError:
+            pass
+    act = m.get("action")
+    if isinstance(act, dict):
+        base.update(act)
+    elif isinstance(act, str) and act.strip():
+        if act.strip().startswith("{"):
+            base.update(SC.check_task(act))
+        else:
+            base["prompt"] = act.strip()
+    if tools is not None:
+        base["tools"] = SC._split_tools(tools)
+    for k, v in flags.items():
+        if v is not None:
+            base[k] = v
+    return base
 
 
 def _confirm(a, q):
@@ -161,6 +314,30 @@ def cmd_jobs(a):
                 _out("(no runs yet)")
             for r in rows:
                 _out(run_line(r))
+            return 0
+        if act == "tools":
+            tools = SC.live_mcp_tools()
+            _out(f"MCP tools the server offers now ({len(tools)}); pick them with --tools a,b:")
+            for i, t in enumerate(tools, 1):
+                _out(f"  {i:>3}) {t.get('name')}  {_short(t.get('description'))}")
+            return 0
+        if act == "free-time":
+            tools = SC._split_tools(getattr(a, "tools", None))
+            if not tools:
+                _out("usage: nimlab jobs free-time [name] --tools tool_a,tool_b [--result-to telegram]"
+                     "  (see: nimlab jobs tools)")
+                return 2
+            spec = SC.free_time_template(tools, name=a.name or "free-time")
+            if a.result_to:
+                spec["result_to"] = a.result_to
+            if a.schedule:
+                spec["schedule"] = a.schedule
+            j = SC.create_job(spec, who="cli", source="cli")
+            _out(f"[ok] created {j['name']}: {S.describe(j['schedule'])}, tools {', '.join(tools)}; next run "
+                 f"{S.fmt(j['state'].get('next_run'))}")
+            hint = SC.not_running_hint() if j.get("enabled") else ""
+            if hint:
+                _out("    " + hint)
             return 0
         if not a.name:
             _out(f"usage: nimlab jobs {act} <name>")
@@ -348,6 +525,12 @@ def add_parsers(sub):
     p.add_argument("--type", choices=SC.USER_ACTION_TYPES, help="action type (default quill_prompt)")
     p.add_argument("--do", help="the action: a prompt, a command, test names, '<tool> <json args>', or chain JSON")
     p.add_argument("--description")
+    p.add_argument("--tools", help="quill_task: the MCP tools for the job, comma-separated (see: nimlab jobs tools)")
+    p.add_argument("--any-tool", action="store_true", help="quill_task: Quill may use any tool (these preferred)")
+    p.add_argument("--only-tools", action="store_true", help="quill_task: only the picked tools (the default)")
+    p.add_argument("--require-tool", action="store_true",
+                   help="quill_task: the run fails if Quill calls no tool")
+    p.add_argument("--no-require-tool", action="store_true", help="quill_task: turn --require-tool off")
     p.add_argument("--result-to", help="telegram | memory | log | none | mcp_tool:<tool>, optionally "
                                        ":only_on_failure or :only_if_notable")
     p.add_argument("--retries", type=int)
@@ -416,6 +599,8 @@ def menu(ask=input, say=print):
         say(C.entry(1, "Jobs", "list, run, enable", pad=20))
         say(C.entry(2, "Run history", "last 25 runs", pad=20))
         say(C.entry(5, "New job", "", pad=20))
+        say(C.entry(7, "Prompt task + tools", "pick the MCP tools", pad=20))
+        say(C.entry(8, "Free time job", "ready-made, hourly", pad=20))
         say(C.entry(6, "Audit", "changes to jobs and actions", pad=20))
         say(C.section("Heartbeat"))
         say(C.entry(3, "Heartbeat", "on / off, run now", pad=20))
@@ -437,6 +622,10 @@ def menu(ask=input, say=print):
                 _actions_menu(q, say)
             elif c == "5":
                 _new_job(q, say)
+            elif c == "7":
+                _after_create(q, say, _new_task(q, say))
+            elif c == "8":
+                _after_create(q, say, _new_task(q, say, template=True))
             elif c == "6":
                 for r in SC.audit_tail(20):
                     say(f"  {r.get('at')}  {r.get('who')} via {r.get('source')}: {r.get('op')} {r.get('kind')} "
@@ -483,6 +672,18 @@ def _jobs_menu(q, say):
                 say(f"[ok] deleted {n}")
 
 
+def _after_create(q, say, j):
+    """Next steps on the result screen: run it now or go back."""
+    if not j:
+        return
+    c = q("r) run it now  b) back: ")
+    if c == "r":
+        r = SC.Scheduler(log=say).run_now(j["name"])
+        if r:
+            say(run_line(r))
+            say(r.get("output") or "")
+
+
 def _new_job(q, say):
     name = q("Name (letters, digits, - _ .): ")
     if not name:
@@ -498,7 +699,10 @@ def _new_job(q, say):
     say("Type: " + ", ".join(f"{i}) {t}" for i, t in enumerate(SC.USER_ACTION_TYPES, 1)))
     t = q("Type [1]: ") or "1"
     at = SC.USER_ACTION_TYPES[int(t) - 1] if t.isdigit() and 1 <= int(t) <= len(SC.USER_ACTION_TYPES) else t
-    hint = {"quill_prompt": "the prompt for Quill", "nimlab_command": "a nimlab command, e.g. test service",
+    if at == "quill_task":
+        _new_task(q, say, name=name, sched=sched)
+        return
+    hint = {"quill_prompt": "the prompt for Quill", "quill_task": "the prompt for Quill", "nimlab_command": "a nimlab command, e.g. test service",
             "test": "test names, e.g. service,tunnel", "mcp_tool": "<tool> <json args>",
             "shell": "the shell command", "chain": "chain JSON (see the README)"}.get(at, "the action")
     action = q(f"Action ({hint}): ")

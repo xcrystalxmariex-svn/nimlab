@@ -111,6 +111,67 @@ def error_detail(text, limit=400):
     return t[:limit] if t else "(empty body)"
 
 
+class RateLimiter:
+    """v3.8.3: paces calls to NVIDIA's API so a sweep stays under the free
+    tier's per-minute limit. Thread-safe: every worker waits its turn, at
+    most `rpm` requests a minute, evenly spaced. A 429's Retry-After pauses
+    everyone until it has passed. rpm 0 or less turns pacing off."""
+
+    def __init__(self, rpm=30, clock=time.monotonic, sleep=time.sleep):
+        import threading
+        self.rpm = float(rpm or 0)
+        self._clock, self._sleep = clock, sleep
+        self._lock = threading.Lock()
+        self._next = 0.0
+        self.waited = 0.0
+        self.pauses = 0
+
+    @property
+    def interval(self):
+        return 60.0 / self.rpm if self.rpm > 0 else 0.0
+
+    def wait(self):
+        if self.rpm <= 0:
+            return 0.0
+        with self._lock:
+            now = self._clock()
+            at = max(now, self._next)
+            self._next = at + self.interval
+        d = at - now
+        if d > 0:
+            self.waited += d
+            self._sleep(d)
+        return d
+
+    def pause_for(self, seconds):
+        """A 429 said wait: nobody sends before it has passed (capped at 120 s)."""
+        try:
+            sec = min(120.0, max(0.0, float(seconds)))
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self._next = max(self._next, self._clock() + sec)
+            self.pauses += 1
+
+    def note(self, res):
+        """Look at a response: a 429 pauses (Retry-After, else 10 s)."""
+        if getattr(res, "status", None) == 429:
+            ra = (getattr(res, "headers", None) or {}).get("retry-after")
+            self.pause_for(ra if ra not in (None, "") else 10.0)
+
+
+def sweep_rpm(settings=None):
+    """Requests a minute for setup's 200-OK sweep and spec rebuild: env
+    NIMLAB_SWEEP_RPM, then discovery_settings.probe_rpm, default 30."""
+    v = os.environ.get("NIMLAB_SWEEP_RPM")
+    if v in (None, ""):
+        v = (settings or {}).get("probe_rpm", 30)
+    try:
+        return max(0.0, float(v))
+    except (TypeError, ValueError):
+        return 30.0
+
+
 class HttpResult:
     """Uniform outcome of one HTTP exchange. Never raises for HTTP errors.
 

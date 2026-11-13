@@ -101,6 +101,35 @@ def using_box(box):
         _local.box = prev
 
 
+class TaskScope:
+    """v3.8.3 quill_task jobs: the MCP tools picked for this run.
+    only=True offers just those (plus memory_search); only=False offers every
+    tool and names these as the ones to use. The MCP admin console still
+    decides which tools exist: a picked tool the server no longer lists is
+    simply not offered."""
+
+    def __init__(self, names, only=True):
+        self.names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        self.only = bool(only)
+
+    def allows(self, name):
+        return (not self.only) or name in self.names
+
+
+def task_scope():
+    return getattr(_local, "scope", None)
+
+
+@contextlib.contextmanager
+def task_tools(names, only=True):
+    prev = getattr(_local, "scope", None)
+    _local.scope = TaskScope(names, only)
+    try:
+        yield _local.scope
+    finally:
+        _local.scope = prev
+
+
 def set_request(admin, who, source):
     """The server's auth check: who is asking, for this request's thread."""
     _local.ident = Identity(admin, who, source)
@@ -391,7 +420,9 @@ WRITE_TOOLS = {
                   "every 30 minutes' -> create name=tunnel-check, schedule='FREQ=MINUTELY;INTERVAL=30', "
                   "action_type=test, job_action='tunnel'. schedule: an Oracle calendar string (FREQ=DAILY;BYHOUR=7), "
                   "a 5-field cron or 'at YYYY-MM-DD HH:MM' (local time). action_type: quill_prompt (a prompt for "
-                  "you), nimlab_command, test (test names), mcp_tool ({tool, args}), shell, chain. result_to: "
+                  "you), quill_task ({prompt, tools: [MCP tool names], only: true = only these tools / false = any, "
+                  "require_tool: true = the run fails if no tool is called}; e.g. a 'free time' job), "
+                  "nimlab_command, test (test names), mcp_tool ({tool, args}), shell, chain. result_to: "
                   "telegram, memory, log, none or mcp_tool:<tool>, optionally :only_on_failure or :only_if_notable. "
                   "The heartbeat is the job named 'heartbeat'. Delete needs confirmation.",
                   _schema({"action": {"type": "string", "enum": ["list", "show", "history", "next", "create",
@@ -507,6 +538,9 @@ class ToolBox:
         self.sa = settings(entity.cluster)
         ident = current()
         self.admin_defs = tool_defs(ident.admin, self.sa) if self.sa.get("enabled") else []
+        self.scope = task_scope()
+        if self.scope is not None and self.scope.only:
+            self.admin_defs = []    # "only these tools": no self-admin tools either
         self.admin_names = {t["name"] for t in self.admin_defs}
         # every tool the server advertised (for clear refusals) and the ones
         # the policy lets the model see (v3.7.1: blocked tools are never shown)
@@ -516,6 +550,8 @@ class ToolBox:
         mcp_tools = list((mcp.tools if mcp else []) or [])
         if pol is not None and hasattr(pol, "why_blocked"):
             mcp_tools = [t for t in mcp_tools if pol.why_blocked(t) is None]
+        if self.scope is not None and self.scope.only:
+            mcp_tools = [t for t in mcp_tools if t.get("name") in self.scope.names]
         builtin = list(getattr(entity, "builtin_tools", lambda: [])())
         self.builtin_names = {t["name"] for t in builtin}
         self.tools = mcp_tools + builtin + self.admin_defs
@@ -537,9 +573,15 @@ class ToolBox:
                 return _text(f"{name} is only for the testbed's admins (or it is turned off).", True)
             if self.mcp is None:
                 return _text(f"No tool named {name}.", True)
+            if self.scope is not None and not self.scope.allows(name):
+                return _text(f"{name} is not one of this job's tools. Use one of: "
+                             f"{', '.join(self.scope.names) or '(none)'}.", True)
             try:
                 return self.mcp.call_tool(name, arguments)
             except Exception as e:  # noqa: BLE001 - MCP down: report it accurately, with a fix for admins
+                mark = getattr(self.entity, "mark_tools_stale", None)
+                if callable(mark):
+                    mark()
                 from .entity import fix_offer
                 cl = getattr(self.entity, "cluster", None) or {}
                 return _text(f"The MCP tool {name} failed: {e}. Answer the user's message without it and say "

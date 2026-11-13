@@ -85,9 +85,13 @@ def swap_models_menu(orch):
         if extra:
             print(C.dim("  Other keys kept as they are: ") +
                   ", ".join(f"{C.role(k)}={C.model(R.describe(orch.roles[k]))}" for k in extra))
-        key = rolemenu.pick_role(C.cinput, print, "Role # to change")
+        print(C.entry("F", "Fallback models", "when a model is busy or down", pad=20))
+        key = rolemenu.pick_role(C.cinput, print, "Role # to change, or F", extra={"f": "FALLBACKS"})
         if not key:
             return
+        if key == "FALLBACKS":
+            rolemenu.fallback_menu(orch, C.cinput, print, save_fn=lambda: save_cluster(orch), verified=verified)
+            continue
         # choose_model() asks picker.choose_list for Verified (N) / All discovered (M)
         rolemenu.configure_role(orch, key, C.cinput, print, save_fn=lambda: save_cluster(orch))
         pause()

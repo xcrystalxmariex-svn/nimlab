@@ -672,6 +672,9 @@ def run_200_sweep(interactive=True):
                                            catalog.load_catalog(),
                                            ttl_sec=float(settings.get("spec_ttl_hours", 72)) * 3600)
     prober = spec_sweep.Prober(api_key=API_KEY, timeout=14)
+    if prober.limiter.rpm > 0:
+        print(f"Paced to {int(prober.limiter.rpm)} requests/min for NVIDIA's free tier "
+              "(discovery_settings.probe_rpm or NIMLAB_SWEEP_RPM; 429 Retry-After respected).")
 
     print("\nStage 1: every registered endpoint (verified JSON, registry, default, matrix).")
     if use_spec:

@@ -248,7 +248,7 @@ def health_text(raw):
              f"(v{rep.get('version', '?')})"]
     last = None
     for c in rep.get("checks") or []:
-        if c.get("status") == "ok" and c.get("section") not in ("processes", "telegram", "scheduler", "memory"):
+        if c.get("status") == "ok" and c.get("section") not in ("processes", "telegram", "scheduler", "memory", "fallbacks"):
             continue
         if c.get("section") != last:
             lines.append("")
@@ -292,8 +292,37 @@ def jobs_text():
         lines.append(f"[{state}] {n}: {S.describe(j.get('schedule', ''))}; next {nxt}; last "
                      f"{st.get('last_status') or '-'}" + (f" (bug {st['last_bug']})" if st.get("last_bug") and
                                                           st.get("last_status") != "SUCCEEDED" else ""))
+        if j.get("action_type") == "quill_task" and isinstance(j.get("action"), dict):
+            lines.append("    tools: " + (", ".join(j["action"].get("tools") or []) or "any"))
     lines.append(SC.status_line())
     return _cut("\n".join(lines))
+
+
+def jobs_sub(conn, uid, args):
+    """/jobs tools  and  /jobs freetime tool_a,tool_b (owner): v3.8.3."""
+    from . import scheduler as SC
+    parts = args.split(None, 1)
+    sub = parts[0].lower()
+    if not conn.is_owner(uid):
+        return "Only the owner can do that."
+    if sub == "tools":
+        tools = SC.live_mcp_tools()
+        return _cut(f"MCP tools on the server now ({len(tools)}):\n" +
+                    "\n".join(f"{i}) {t.get('name')}" for i, t in enumerate(tools, 1)) +
+                    "\n\nMake a Free time job: /jobs freetime name_a,name_b")
+    if sub in ("freetime", "free-time"):
+        names = SC._split_tools(parts[1] if len(parts) > 1 else "")
+        if not names:
+            return "Usage: /jobs freetime tool_a,tool_b   (list them with /jobs tools)"
+        live = {t.get("name") for t in SC.live_mcp_tools()}
+        unknown = [n for n in names if n not in live]
+        if unknown:
+            return "Not on the MCP server now: " + ", ".join(unknown) + ". See /jobs tools."
+        j = SC.create_job(SC.free_time_template(names), who=f"telegram:{uid}", source="telegram")
+        hint = SC.not_running_hint() if j.get("enabled") else ""
+        return (f"Created {j['name']}: every hour Quill picks one of {', '.join(names)}, plays with it and "
+                f"reports here." + (f"\n{hint}" if hint else ""))
+    return "Usage: /jobs, /jobs tools, /jobs freetime tool_a,tool_b"
 
 
 def heartbeat_text():
@@ -335,7 +364,10 @@ def handle(conn, chat_id, uid, cmd, text):
         conn.send(chat_id, "Usage: /recall <words to search for>")
         return True
     if cmd == "/jobs":
-        conn.send(chat_id, _safe(jobs_text))
+        if args.strip():
+            conn.send(chat_id, _safe(lambda: jobs_sub(conn, uid, args.strip())))
+        else:
+            conn.send(chat_id, _safe(jobs_text))
         return True
     if cmd == "/autoplay":
         conn.send(chat_id, _safe(lambda: autoplay_command(conn, args)))
