@@ -15,7 +15,6 @@ build/
 local_settings.json
 *.pem
 *.key
-# Runtime-only under data/ (default JSON stores are tracked)
 data/legacy/
 data/*.tmp
 data/*.bak
