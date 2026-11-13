@@ -1,0 +1,383 @@
+{
+  "schema": 1,
+  "updated_at": null,
+  "routing": {
+    "version": "2026.1",
+    "gateways": {
+      "integrate": "https://integrate.api.nvidia.com/v1",
+      "ai_api": "https://ai.api.nvidia.com/v1",
+      "nvcf_functions": "https://api.nvcf.nvidia.com/v2/nvcf/functions",
+      "nvcf_grpc": "grpc.nvcf.nvidia.com:443"
+    },
+    "static_routes": {
+      "chat": {
+        "gateway": "integrate",
+        "path": "/chat/completions",
+        "method": "POST"
+      },
+      "chat_stream": {
+        "gateway": "integrate",
+        "path": "/chat/completions",
+        "method": "POST"
+      },
+      "vision": {
+        "gateway": "integrate",
+        "path": "/chat/completions",
+        "method": "POST"
+      },
+      "completions": {
+        "gateway": "integrate",
+        "path": "/completions",
+        "method": "POST"
+      },
+      "embeddings": {
+        "gateway": "integrate",
+        "path": "/embeddings",
+        "method": "POST"
+      },
+      "embeddings_typed": {
+        "gateway": "integrate",
+        "path": "/embeddings",
+        "method": "POST"
+      },
+      "ranking": {
+        "gateway": "integrate",
+        "path": "/ranking",
+        "method": "POST"
+      },
+      "responses": {
+        "gateway": "integrate",
+        "path": "/responses",
+        "method": "POST"
+      },
+      "models": {
+        "gateway": "integrate",
+        "path": "/models",
+        "method": "GET"
+      },
+      "rerank_classic": {
+        "gateway": "ai_api",
+        "path": "/retrieval/nvidia/reranking",
+        "method": "POST"
+      },
+      "embeddings_retrieval": {
+        "gateway": "ai_api",
+        "path": "/retrieval/nvidia/embeddings",
+        "method": "POST"
+      }
+    },
+    "explicit_model_overrides": {
+      "nvidia/magpie-tts-zeroshot": {
+        "gateway": "ai_api",
+        "path": "/cv/nvidia/magpie-tts-zeroshot",
+        "method": "POST",
+        "kind": "audio_tts"
+      },
+      "nvidia/magpie-tts-multilingual": {
+        "gateway": "ai_api",
+        "path": "/cv/nvidia/magpie-tts-multilingual",
+        "method": "POST",
+        "kind": "audio_tts"
+      }
+    },
+    "dynamic_prefix_rules": [
+      {
+        "pattern": "cosmos",
+        "gateway": "ai_api",
+        "prefix": "/cosmos",
+        "kind": "video"
+      },
+      {
+        "pattern": "genai",
+        "gateway": "ai_api",
+        "prefix": "/genai",
+        "kind": "image_gen",
+        "keywords": [
+          "flux",
+          "stable-diffusion",
+          "sdxl",
+          "imagen",
+          "sana"
+        ]
+      },
+      {
+        "pattern": "retrieval",
+        "gateway": "ai_api",
+        "prefix": "/retrieval",
+        "kind": "document",
+        "keywords": [
+          "docling",
+          "parse",
+          "ocr",
+          "nemoretriever"
+        ]
+      },
+      {
+        "pattern": "cv",
+        "gateway": "ai_api",
+        "prefix": "/cv",
+        "kind": "vision_task",
+        "keywords": [
+          "segment",
+          "detect",
+          "depth",
+          "pose"
+        ]
+      }
+    ],
+    "nvcf_fallbacks": [
+      "parakeet",
+      "canary",
+      "riva",
+      "fastpitch",
+      "hifigan",
+      "chatterbox"
+    ]
+  },
+  "candidate_routes": [
+    {
+      "name": "integrate_chat_completions",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "kind": "chat",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_vision_chat",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "kind": "vision",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_embeddings",
+      "url": "https://integrate.api.nvidia.com/v1/embeddings",
+      "kind": "embeddings",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_embeddings_typed",
+      "url": "https://integrate.api.nvidia.com/v1/embeddings",
+      "kind": "embeddings_typed",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_ranking",
+      "url": "https://integrate.api.nvidia.com/v1/ranking",
+      "kind": "ranking",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_completions",
+      "url": "https://integrate.api.nvidia.com/v1/completions",
+      "kind": "completions",
+      "method": "POST"
+    },
+    {
+      "name": "integrate_responses",
+      "url": "https://integrate.api.nvidia.com/v1/responses",
+      "kind": "responses",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_retrieval_reranking",
+      "url": "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking",
+      "kind": "rerank",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_retrieval_embeddings",
+      "url": "https://ai.api.nvidia.com/v1/retrieval/nvidia/embeddings",
+      "kind": "embeddings_retrieval",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_cv_model_path",
+      "template": "https://ai.api.nvidia.com/v1/cv/{publisher}/{name}",
+      "kind": "audio_tts",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_genai_model_path",
+      "template": "https://ai.api.nvidia.com/v1/genai/{publisher}/{name}",
+      "kind": "image_gen",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_cosmos_model_path",
+      "template": "https://ai.api.nvidia.com/v1/cosmos/{publisher}/{name}",
+      "kind": "video",
+      "method": "POST"
+    },
+    {
+      "name": "ai_api_retrieval_model_path",
+      "template": "https://ai.api.nvidia.com/v1/retrieval/{publisher}/{name}",
+      "kind": "document",
+      "method": "POST"
+    }
+  ],
+  "endpoints": {
+    "POST https://integrate.api.nvidia.com/v1/chat/completions": {
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "method": "POST",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "chat",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877045+00:00",
+      "last_seen": "2026-11-13T12:00:38.877045+00:00",
+      "last_result": null
+    },
+    "POST https://integrate.api.nvidia.com/v1/completions": {
+      "url": "https://integrate.api.nvidia.com/v1/completions",
+      "method": "POST",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "completions",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877155+00:00",
+      "last_seen": "2026-11-13T12:00:38.877155+00:00",
+      "last_result": null
+    },
+    "POST https://integrate.api.nvidia.com/v1/embeddings": {
+      "url": "https://integrate.api.nvidia.com/v1/embeddings",
+      "method": "POST",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "embeddings",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877160+00:00",
+      "last_seen": "2026-11-13T12:00:38.877160+00:00",
+      "last_result": null
+    },
+    "POST https://integrate.api.nvidia.com/v1/ranking": {
+      "url": "https://integrate.api.nvidia.com/v1/ranking",
+      "method": "POST",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "ranking",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877168+00:00",
+      "last_seen": "2026-11-13T12:00:38.877168+00:00",
+      "last_result": null
+    },
+    "POST https://integrate.api.nvidia.com/v1/responses": {
+      "url": "https://integrate.api.nvidia.com/v1/responses",
+      "method": "POST",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "responses",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877171+00:00",
+      "last_seen": "2026-11-13T12:00:38.877171+00:00",
+      "last_result": null
+    },
+    "GET https://integrate.api.nvidia.com/v1/models": {
+      "url": "https://integrate.api.nvidia.com/v1/models",
+      "method": "GET",
+      "content_type": null,
+      "host": "integrate.api.nvidia.com",
+      "kind": "models",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877175+00:00",
+      "last_seen": "2026-11-13T12:00:38.877175+00:00",
+      "last_result": null
+    },
+    "POST https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking": {
+      "url": "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking",
+      "method": "POST",
+      "content_type": null,
+      "host": "ai.api.nvidia.com",
+      "kind": "rerank_classic",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877180+00:00",
+      "last_seen": "2026-11-13T12:00:38.877180+00:00",
+      "last_result": null
+    },
+    "POST https://ai.api.nvidia.com/v1/retrieval/nvidia/embeddings": {
+      "url": "https://ai.api.nvidia.com/v1/retrieval/nvidia/embeddings",
+      "method": "POST",
+      "content_type": null,
+      "host": "ai.api.nvidia.com",
+      "kind": "embeddings_retrieval",
+      "function_id": null,
+      "models": [],
+      "sources": [
+        "registry",
+        "matrix"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877184+00:00",
+      "last_seen": "2026-11-13T12:00:38.877184+00:00",
+      "last_result": null
+    },
+    "POST https://ai.api.nvidia.com/v1/cv/nvidia/magpie-tts-zeroshot": {
+      "url": "https://ai.api.nvidia.com/v1/cv/nvidia/magpie-tts-zeroshot",
+      "method": "POST",
+      "content_type": null,
+      "host": "ai.api.nvidia.com",
+      "kind": "audio_tts",
+      "function_id": null,
+      "models": [
+        "nvidia/magpie-tts-zeroshot"
+      ],
+      "sources": [
+        "override"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877190+00:00",
+      "last_seen": "2026-11-13T12:00:38.877190+00:00",
+      "last_result": null
+    },
+    "POST https://ai.api.nvidia.com/v1/cv/nvidia/magpie-tts-multilingual": {
+      "url": "https://ai.api.nvidia.com/v1/cv/nvidia/magpie-tts-multilingual",
+      "method": "POST",
+      "content_type": null,
+      "host": "ai.api.nvidia.com",
+      "kind": "audio_tts",
+      "function_id": null,
+      "models": [
+        "nvidia/magpie-tts-multilingual"
+      ],
+      "sources": [
+        "override"
+      ],
+      "first_seen": "2026-11-13T12:00:38.877198+00:00",
+      "last_seen": "2026-11-13T12:00:38.877198+00:00",
+      "last_result": null
+    }
+  },
+  "stale": {},
+  "grpc_functions": {},
+  "last_sync": null
+}
