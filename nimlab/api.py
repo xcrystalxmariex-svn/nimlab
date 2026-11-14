@@ -358,10 +358,20 @@ class NimClient:
             content = "\n".join(p for p in parts if p)
         return content or ""
 
+    def model_params(self, model):
+        """Extra request fields for one chat model from cluster model_params (Quill latency fix,
+        3.8.4 candidate), e.g. {"minimaxai/minimax-m3.1-flash": {"reasoning_effort": "low"}}.
+        Applies wherever the model is used: persona, fallbacks, scheduler jobs."""
+        mp = (self.cluster or {}).get("model_params") or {}
+        got = mp.get(model) if isinstance(mp, dict) else None
+        return dict(got) if isinstance(got, dict) else {}
+
     def chat(self, model, messages, temperature=0.7, max_tokens=1024, url=None, timeout=None, extra=None):
+        params = self.model_params(model)
         url, model = self.route(model, "chat", url)
         payload = {"model": model, "messages": messages, "temperature": temperature,
                    "max_tokens": max_tokens, "stream": False}
+        payload.update(params)
         payload.update(extra or {})
         res = self.post(url or f"{self.integrate()}/chat/completions", payload, timeout)
         if not res.ok:
@@ -375,10 +385,12 @@ class NimClient:
                            status=res.status, raw=body)
 
     def chat_stream(self, model, messages, on_token=None, temperature=0.7, max_tokens=1024, url=None, timeout=None):
+        params = self.model_params(model)
         url, model = self.route(model, "chat", url)
         url = url or f"{self.integrate()}/chat/completions"
         payload = {"model": model, "messages": messages, "temperature": temperature,
                    "max_tokens": max_tokens, "stream": True}
+        payload.update(params)
         h = dict(self.headers_for(url), **{"Content-Type": "application/json", "Accept": "text/event-stream"})
         t0 = time.monotonic()
         res = self.http.request("POST", url or f"{self.integrate()}/chat/completions",
@@ -715,4 +727,12 @@ def play_audio(path):
             except subprocess.TimeoutExpired:
                 pass
             return player[0]
+    try:   # 3.8.5: headless (VPS): the active phone plays it
+        from . import audiobus
+        if audiobus.remote_ready():
+            with open(path, "rb") as f:
+                audiobus.publish(f.read(), fmt=os.path.splitext(path)[1].lstrip("."), source="play_audio")
+            return "nimbridge"
+    except Exception:  # noqa: BLE001 - playing is best effort
+        pass
     return None

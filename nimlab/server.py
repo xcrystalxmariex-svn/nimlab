@@ -1488,6 +1488,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise ApiError(404, "no such file (hosted files expire; see entity.media_ttl_hours)",
                                        code="not_found")
                     self._send(200, data, ctype=_mime_of(data))
+            elif path.startswith("/v1/audio/bus/"):
+                self._audio_bus("GET", path[len("/v1/audio/bus"):])
             elif path == "/call":
                 if not self.app.entity_settings().get("call_page", True):
                     raise ApiError(404, "the call page is off (serve settings call on)", code="unknown_url")
@@ -1527,14 +1529,27 @@ class Handler(BaseHTTPRequestHandler):
         app = self.app
         if path == "/telegram/webhook":
             # Telegram's own secret-token header guards this one (not the API key)
+            _mark_user("telegram/webhook")
             from . import telegram
             try:
                 code = telegram.handle_webhook(self.headers, self._read_body())
             except Exception:  # noqa: BLE001 - Telegram retries on errors; never crash the server
                 code = 500
             return self._send(code, {"ok": code == 200})
+        if path.startswith("/audio/bus/"):
+            try:
+                return self._audio_bus("POST", path[len("/audio/bus"):])
+            except ApiError as e:
+                self._error(e)
+            except (BrokenPipeError, ConnectionResetError):
+                self._status = 499
+            except Exception as e:  # noqa: BLE001
+                self._error(internal_error(e))
+            return self._finish()
         try:
             app.check_key(self.headers, call_ok=(path == "/chat/completions"))
+            if path in USER_PATHS and str(self.headers.get(SELF_TEST_HEADER) or "") != "1":
+                _mark_user(path)   # v3.8.4: a user turn ends a running Free time at once
             if path in ("/chat/completions", "/responses"):
                 body = self._json_body()
                 uid = self.headers.get("X-Testbed-User") or self.headers.get("X-Session-Id")
@@ -1574,6 +1589,125 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if not self._stream:
                 self._finish()
+
+    # -- audio bus (3.8.5): phones play the lab's audio, lend their mic -------
+    def _audio_bus(self, method, sub):
+        """/v1/audio/bus/*. Phones use their own device token; publish, say,
+        use and devices take the lab API key. See audiobus.py."""
+        from . import audiobus as AB
+        app = self.app
+        auth = self.headers.get("Authorization") or ""
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        q = self._query()
+
+        def device():
+            name = AB.auth_device(token)
+            if not name:
+                raise ApiError(401, "unknown device token (on the server: nimlab audio add NAME)",
+                               etype="invalid_request_error", code="invalid_device_token")
+            return name
+
+        try:
+            if method == "GET" and sub == "/events":
+                name = device()
+                try:
+                    since = int(q.get("since", "-1"))
+                    wait = float(q.get("wait", "25"))
+                except ValueError:
+                    raise ApiError(400, "since and wait must be numbers")
+                caps = {"mic": q.get("mic") == "1", "client": (q.get("client") or "")[:40]}
+                return self._send(200, AB.wait_events(name, since, wait, caps),
+                                  extra={"Cache-Control": "no-store"})
+            if method == "GET" and sub.startswith("/clips/"):
+                data, mime = AB.clip(device(), sub[len("/clips/"):])
+                return self._send(200, data, ctype=mime, extra={"Cache-Control": "no-store"})
+            if method == "GET" and sub == "/me":
+                name = device()
+                return self._send(200, dict(AB.device_state(name) or {}, head=AB.head()))
+            if method == "POST" and sub in ("/activate", "/release"):
+                name = device()
+                if sub == "/activate":
+                    AB.set_active(name)
+                elif AB.active() == name:
+                    AB.set_active(None)
+                return self._send(200, {"active": AB.active(), "device": name})
+            if method == "POST" and sub == "/ack":
+                body = self._json_body()
+                AB.ack(device(), str(body.get("req") or ""), body.get("state") or "", body.get("error") or "")
+                return self._send(200, {"ok": True})
+            if method == "POST" and sub == "/upload":
+                name = device()
+                AB.upload(name, q.get("req") or "", self._read_body())
+                return self._send(200, {"ok": True})
+            if method == "POST" and sub == "/talk":
+                return self._audio_bus_talk(device())
+            # -- lab key from here on ------------------------------------------
+            app.check_key(self.headers)
+            if method == "GET" and sub == "/devices":
+                return self._send(200, {"devices": AB.devices(), "active": AB.active()})
+            if method == "POST" and sub == "/use":
+                body = self._json_body()
+                AB.set_active(body.get("device") or None)
+                return self._send(200, {"active": AB.active()})
+            if method == "POST" and sub == "/publish":
+                ctype = (self.headers.get("Content-Type") or "").lower()
+                if ctype.startswith(("audio/", "application/octet-stream")):
+                    data, opts = self._read_body(), q
+                    fmt = q.get("format") or ctype.split("/", 1)[1].split(";")[0]
+                else:
+                    opts = self._json_body()
+                    try:
+                        data = base64.b64decode(opts.get("audio") or "", validate=False)
+                    except (binascii.Error, ValueError):
+                        raise ApiError(400, "'audio' must be base64")
+                    fmt = opts.get("format")
+                ev = AB.publish(data, fmt=fmt, target=opts.get("target") or None, source="api",
+                                agent=opts.get("agent") or "", text=opts.get("text") or "",
+                                pcm_rate=opts.get("pcm_rate") or opts.get("sample_rate"))
+                return self._send(200, ev)
+            if method == "POST" and sub == "/say":
+                body = self._json_body()
+                text = body.get("text") or body.get("input")
+                if not isinstance(text, str) or not text.strip():
+                    raise ApiError(400, "'text' is required", param="text")
+                data, _mime, _meta = app.speech({"model": main_model(app.settings), "input": text,
+                                                 "voice": body.get("voice"), "response_format": "wav"})
+                ev = AB.publish(data, fmt="wav", target=body.get("target") or None, source="say",
+                                agent=body.get("agent") or "", text=text)
+                return self._send(200, ev)
+            raise ApiError(404, f"Unknown route: {method} /v1/audio/bus{sub}", code="unknown_url")
+        except AB.BusError as e:
+            raise ApiError(e.status, e.message, code="audio_bus")
+
+    def _audio_bus_talk(self, name):
+        """Push-to-talk from a phone: its recording goes to the entity as a
+        voice turn (ASR -> persona -> TTS, the same path as voice notes) and
+        the reply audio waits on the bus for that phone only."""
+        from . import audiobus as AB
+        app = self.app
+        raw = self._read_body()
+        if not raw:
+            raise ApiError(400, "the recording is empty")
+        fmt = AB.sniff(raw) or "m4a"
+        _mark_user("audio/bus/talk")
+        body = {"model": main_model(app.settings), "modalities": ["text", "audio"], "audio": {"format": "wav"},
+                "user": f"phone-{name}",
+                "messages": [{"role": "user", "content": [
+                    {"type": "input_audio", "input_audio": {"data": base64.b64encode(raw).decode("ascii"),
+                                                            "format": fmt}}]}]}
+        self._model = body["model"]
+        reply = app.chat(body, self._base() + "/v1")
+        info = reply.info or {}
+        out = {"text": reply.text, "transcript": info.get("transcript") or (reply.audio or {}).get("transcript"),
+               "clip": None}
+        a = reply.audio or {}
+        if a.get("data"):
+            ev = AB.publish(base64.b64decode(a["data"]), fmt="wav", target=name, source="talk",
+                            text=reply.text, deliver=False)
+            out.update(clip=ev["clip"], ext=ev["ext"], mime=ev["mime"], duration_ms=ev["duration_ms"])
+        elif info.get("tts_error"):
+            out["tts_error"] = str(info.get("tts_error"))[:200]
+        self._send(200, out)
 
     def _post_chat(self, path, body):
         app = self.app
@@ -1848,6 +1982,16 @@ class Tunnel:
 # Self-test: calls the server like an external client
 # ---------------------------------------------------------------------------
 SELF_TEST_HEADER = "X-Nimlab-Self-Test"
+# v3.8.4: requests that are a user talking to Quill (Telegram, the endpoint, a voice call)
+USER_PATHS = ("/chat/completions", "/responses", "/audio/speech", "/audio/transcriptions", "/images/generations")
+
+
+def _mark_user(path):
+    try:
+        from . import interrupts
+        interrupts.mark(interrupts.USER, path)
+    except Exception:  # noqa: BLE001 - never let this get in the way of a reply
+        pass
 
 
 def _call(url, key, body=None, method=None, headers=None, timeout=120):

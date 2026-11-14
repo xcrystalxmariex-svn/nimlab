@@ -103,7 +103,7 @@ DEFAULTS = {
     "oracle": {"schema": "MEM", "table_prefix": "TESTBED", "profile_id": "TESTBED",
                "register_profile": True, "credentials_file": "~/.config/nimlab/oracle_mem.json",
                "user": "", "dsn": "", "config_dir": "", "wallet_dir": "",
-               "index": "ivf", "distance": "COSINE", "target_accuracy": 90, "onnx_model": "", "dims": 0,
+               "index": "ivf", "distance": "COSINE", "target_accuracy": 90, "onnx_model": "", "query_prefix": "", "dims": 0,
                "connect_timeout_sec": 15,
                # Oracle Text index on the memory text for keyword search (CONTAINS);
                # INSTR is used when Oracle Text is not available

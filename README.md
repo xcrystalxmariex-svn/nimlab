@@ -854,6 +854,13 @@ Every command, grouped. The launcher's main menu has the same list under **Comma
 
 **Server and tunnel**
 
+- `nimlab audio devices`: Phones on the audio bus (nimbridge); * marks the active one
+- `nimlab audio add <name> [--label <label>]`: Register a phone for nimbridge and print its token once
+- `nimlab audio remove <name>`: Forget a phone (its token stops working)
+- `nimlab audio use <name>`: Make this phone the active one: audio and mic requests go to it only
+- `nimlab audio release`: No active phone: nothing is relayed
+- `nimlab audio tone [--target <name>]`: Play a short test tone on the active phone
+- `nimlab audio say [<text>] [--target <name>]`: Speak text with the TTS role on the active phone
 - `nimlab serve start`: Start the local OpenAI-style server in this terminal (Ctrl+C stops) *(interactive)*
 - `nimlab serve start --tunnel`: Start the server with the public tunnel *(interactive)*
 - `nimlab serve info`: Show the server address, model name and how to connect
@@ -1293,6 +1300,7 @@ In config_cluster.json (v3.8.0; `./start.sh jobs`, `./start.sh scheduler`).
 - `scheduler_settings.catchup` (default `"one"`): After downtime, for jobs with no catchup of their own: one (run once), none (skip, record MISSED), all (run each missed time).
 - `scheduler_settings.catchup_max` (default `5`): catchup=all runs at most this many missed times.
 - `scheduler_settings.max_parallel` (default `2`): Runs at once across all jobs; more wait for the next tick.
+- `scheduler_settings.unlimited_job_tools` (default `true`): A quill_task job with its own tool list (Free time, email alerts) has no fixed tool-step cap: Quill may use those tools, and only those, as long as he likes, with runaway guards (`scheduler_settings.job_guard`) instead. `false` puts `mcp_settings.max_tool_steps` back on those jobs.
 - `scheduler_settings.default_timeout_sec` (default `600`): Time limit for a run when the job sets none; longer is TIMED_OUT.
 - `scheduler_settings.history_days` (default `30`): Run history older than this is pruned.
 - `scheduler_settings.history_max` (default `2000`): Run history keeps at most this many runs.

@@ -190,8 +190,15 @@ def run_call(ent, input_fn=input, out=print, device=None, max_turns=None, name=N
     """The call loop. Returns the number of turns. device is a Termux-like
     object (check, record_start, record_stop, play, stop)."""
     if device is None and not on_termux():
-        out(C.warn(OFF_TERMUX))
-        return 0
+        # 3.8.5: on the VPS the active phone (nimbridge) lends its mic and speaker
+        from . import audiobus
+        if audiobus.active():
+            device = audiobus.RemoteDevice()
+            out(C.dim(f"Using phone '{audiobus.active()}' for the mic and speaker (audio bus)."))
+        else:
+            out(C.warn(OFF_TERMUX))
+            out(C.dim("Or connect a phone: nimlab audio add NAME here, then nimbridge setup on the phone."))
+            return 0
     dev = device or Termux()
     ok, problems, warnings = dev.check()
     if not ok:
@@ -255,6 +262,8 @@ def _one_turn(ent, mind, dev, path, spoke, history, rec_dir, who, vs, tr, out):
     the time went, and a slow or failed turn goes to the bug log with it.
     -> the Mind result, or None when nothing was recorded."""
     from . import environment as ENV
+    from . import interrupts
+    interrupts.mark(interrupts.USER, "voice call")   # v3.8.4: SeVin talking ends a running Free time
     with perf.stage("record", target="termux-microphone-record") as st:
         got = dev.record_stop(path)
         st["ok"] = bool(got)

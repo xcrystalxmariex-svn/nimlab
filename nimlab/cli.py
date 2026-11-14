@@ -993,6 +993,8 @@ def build_parser():
     from . import uimenu, endpoints
     uimenu.add_parser(sub)
     endpoints.add_parser(sub)
+    from . import audiobus
+    audiobus.add_parser(sub)
     return p
 
 

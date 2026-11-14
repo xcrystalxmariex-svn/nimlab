@@ -240,12 +240,27 @@ class MemoryCore:
             self.backend.save()
 
     def embed(self, text, input_type):
+        # Quill latency fix (3.8.4 candidate): after a failed embedding call, skip the provider for
+        # embedding.cooldown_sec (0 = off, the 3.8.3 behaviour) so every turn does not wait out the
+        # same timeout again. Recall falls back to keyword search; stores go to the pending queue.
+        import time as _time
+        now = _time.monotonic()
+        if now < getattr(self, "_embed_down_until", 0.0):
+            return None
         try:
             emb = self.embedder
             return emb.embed(text, input_type)
         except Exception as e:  # noqa: BLE001 - provider down: nothing stored or recalled
             self.last_error = str(e)
-            self.warn(f"embedding failed: {e}")
+            try:
+                cool = float((self.settings.get("embedding") or {}).get("cooldown_sec", 0) or 0)
+            except (TypeError, ValueError):
+                cool = 0.0
+            if cool > 0:
+                self._embed_down_until = _time.monotonic() + cool
+                self.warn(f"embedding failed: {e} (skipping embeddings for {cool:g} s)")
+            else:
+                self.warn(f"embedding failed: {e}")
             return None
 
     # -- dimensions and the pending queue (v3.7.1) ---------------------------

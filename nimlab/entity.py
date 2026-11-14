@@ -19,8 +19,8 @@ from . import config, intent, rolemcp, roles as R
 from . import selfadmin as SA
 from .api import (ModelResult, NimClient, OCR_PROMPT, file_to_data_url, image_to_data_url, play_audio, save_bytes,
                   save_wav)
-from .mcp import (MCPClient, MCPError, ToolPolicy, native_calls_as_text, run_tool_loop, strip_tool_markup,
-                  tools_prompt)
+from .mcp import (LOAD_TOOLS, MCPClient, MCPError, ToolPolicy, native_calls_as_text, run_tool_loop,
+                  strip_tool_markup, tools_prompt)
 from .memory import MemoryCore, is_error_text
 
 # "what were we just talking about?", "do you remember ...", "on the voice call earlier"
@@ -532,16 +532,23 @@ class Entity:
             return True
         return bool(self.cluster.get("routing_settings", {}).get("soul_in_abilities", False))
 
+    @property
+    def lazy_tools(self):
+        """mcp_settings.tool_definitions: "full" (every schema in every prompt, the 3.8.3 default) or
+        "lazy" (a one-line index; schemas load on demand with load_tools)."""
+        return str((self.mcp_settings or {}).get("tool_definitions", "full")).lower() == "lazy"
+
     def build_system_prompt(self, role="persona", with_tools=True, extra=None):
         role = R.LEGACY_MAP.get(role, role) if role not in R.BY_KEY else role
         tools_desc = ""
         box = SA.active_box()
         if with_tools and box is not None and box.tools:
             # box.tools holds only what the policy lets this model see
-            tools_desc = tools_prompt(box.tools, ["*"]) + SA.prompt_note(bool(box.admin_names))
+            tools_desc = tools_prompt(box.tools, ["*"], lazy=self.lazy_tools) + SA.prompt_note(bool(box.admin_names))
         elif with_tools and self.mcp and self.mcp.tools:
             _t, allowed, _b = self.mcp_exposure()
-            tools_desc = tools_prompt([t for t in self.mcp.tools if t.get("name") in set(allowed)], ["*"]) \
+            tools_desc = tools_prompt([t for t in self.mcp.tools if t.get("name") in set(allowed)], ["*"],
+                                      lazy=self.lazy_tools) \
                 if allowed else ""
         soul = f"=== SOUL / IDENTITY SPECIFICATION ===\n{self.soul}\n\n" if self.soul_for(role) else ""
         out = f"{soul}=== FUNCTION ROLE: {R.label(role).upper()} ===\n{self.role_prompt(role)}{tools_desc}"
@@ -1042,7 +1049,7 @@ class Entity:
             last["role"] = use
             if r.ok and box is not None and isinstance(r.raw, dict):
                 # native OpenAI tool_calls (a server-side tool parser) -> the same loop
-                native = native_calls_as_text(r.raw, known=lambda n: box.tool(n) is not None)
+                native = native_calls_as_text(r.raw, known=lambda n: n == LOAD_TOOLS or box.tool(n) is not None)
                 if native:
                     r.text = native
             return (r.text if r.ok else ""), r.ok
@@ -1061,12 +1068,21 @@ class Entity:
         box = SA.ToolBox(self, self.mcp if (self.mcp and self.mcp.tools) else None) if use_tools else None
         if box is not None and box.tools:
             s = self.mcp_settings
+            max_steps = int(s.get("max_tool_steps", 4))
+            from . import jobguard as JG
+            guard = JG.current()
+            if guard is not None and guard.unlimited and box.scoped():
+                # v3.8.4: a scheduled job with its own tool list: no fixed step cap, only those
+                # tools (box enforces it), runaway guards and interrupts instead
+                max_steps = None
+            elif guard is not None and not guard.interruptible:
+                guard = None
             with SA.using_box(box):
                 reply, trace = run_tool_loop(chat_fn, history, box, SA.Policy(self.policy(), box),
-                                             max_steps=int(s.get("max_tool_steps", 4)),
+                                             max_steps=max_steps,
                                              max_calls_per_step=int(s.get("max_calls_per_step", 3)),
                                              max_result_chars=int(s.get("max_result_chars", 8000)),
-                                             log=self.log, final_fn=final_fn)
+                                             log=self.log, final_fn=final_fn, guard=guard)
             result = last["r"]
             if result.ok:
                 result.text = reply

@@ -136,6 +136,9 @@ class OracleBackend:
         self.distance = (self.o.get("distance") or "COSINE").upper()
         self.accuracy = int(self.o.get("target_accuracy") or 90)
         self.onnx = embed_model or ""
+        # in-database models trained with a query instruction (bge: "Represent this sentence for searching
+        # relevant passages: ") get it on search queries only; stored passages are embedded as-is.
+        self.query_prefix = str(self.o.get("query_prefix") or "")
         self.log = log
         self._check_names()
         self.t_mem = f"{self.schema}.{self.prefix}_MEMORIES"
@@ -470,7 +473,7 @@ class OracleBackend:
         sc = self._scope_sql(b, scope)
         if self.onnx:
             q = f"VECTOR_EMBEDDING({self.onnx} USING :q AS data)"
-            b["q"] = query_text or ""
+            b["q"] = (self.query_prefix + query_text) if query_text else ""
         else:
             if self.dims and len(vec) != self.dims:
                 return []

@@ -1047,9 +1047,12 @@ class Autoplay(TgBase):
         self.assertIn("No player found: pkg install termux-api", out)
         self.assertIn("Voice replies are off", out)
         self.termux = False
-        out = self.say("/autoplay status")[0]
-        self.assertIn("phone speaker isn't available", out)
-        self.assertEqual(self.play(), "not termux")
+        import tempfile
+        with mock.patch.dict(os.environ, {"NIMLAB_AUDIO_BUS_DIR": tempfile.mkdtemp(prefix="bus")}):
+            out = self.say("/autoplay status")[0]
+            # 3.8.5: off Termux the reply goes to the active phone on the audio bus
+            self.assertIn("No phone is active on the audio bus", out)
+            self.assertEqual(self.play(), "no device")
         self.assertEqual(self.ran, [])
 
     def test_plays_with_termux_media_player_then_play_audio(self):

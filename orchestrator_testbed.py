@@ -568,7 +568,7 @@ def persona_menu(orch):
 # (section, number, label, hint): the testbed's main menu, most used first
 MAIN_MENU = (("Chat", ((1, "Chat session", "text, images, files, /help"),
                        (2, "Live voice call", "mic -> ASR -> TTS" if voicecall.on_termux()
-                        else "Termux only; Telegram voice notes work"))),
+                        else "via your phone (nimbridge)"))),
              ("Roles & models", ((3, "Roles", "view and hot-swap the 16"),
                                  (4, "Test a role", "status + latency"),
                                  (5, "Voice clone clip", "TTS role"),

@@ -144,8 +144,15 @@ def autoplay(data, ext=".wav", log=print, spawn=None, run=None):
         if not data:
             return "empty"
         if not _termux():
-            log("[telegram] autoplay is on, but the phone speaker isn't available off Termux")
-            return "not termux"
+            # 3.8.5: on the VPS, hand the reply to the active phone over the audio bus
+            from . import audiobus
+            try:
+                ev = audiobus.publish(data, fmt=str(ext).lstrip("."), source="telegram", agent="quill")
+                log(f"[telegram] autoplay: relayed to phone '{ev['target']}' ({ev['ext']}, {ev['bytes']} bytes)")
+                return "relayed"
+            except audiobus.BusError as e:
+                log(f"[telegram] autoplay is on, but no phone took it: {e.message}")
+                return "no device"
         p = player()
         if not p:
             log("[telegram] autoplay is on but no player was found (pkg install termux-api, plus the Termux:API app)")
@@ -190,7 +197,16 @@ def autoplay_command(conn, arg):
     lines = [f"Autoplay is {'on' if on else 'off'}."]
     if on:
         if not _termux():
-            lines.append("The phone speaker isn't available here (not running on Termux), so nothing will play.")
+            from . import audiobus
+            a = audiobus.active()
+            st = audiobus.device_state(a) if a else None
+            if st:
+                lines.append(f"Voice replies are relayed to phone '{a}' over the audio bus ("
+                             + ("connected" if st["online"] else "not connected right now: start nimbridge there")
+                             + ").")
+            else:
+                lines.append("No phone is active on the audio bus, so nothing will play. "
+                             "Start nimbridge on a phone (nimlab audio add NAME on the server first).")
         elif not player():
             lines.append("No player found: pkg install termux-api (and install the Termux:API app). "
                          "play-audio works as well.")

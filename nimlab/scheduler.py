@@ -79,6 +79,10 @@ DEFAULTS = {
     "history_days": 30,
     "history_max": 2000,
     "output_chars": 1500,       # output kept per run
+    # v3.8.4: a quill_task job with its own tool list (only=true) has no fixed tool-step cap;
+    # false puts mcp_settings.max_tool_steps back on those jobs too
+    "unlimited_job_tools": True,
+    # job_guard: the runaway guards for those jobs (see nimlab.jobguard.DEFAULTS)
 }
 JOB_DEFAULTS = {
     "description": "", "enabled": True, "start_date": None, "end_date": None, "max_runs": 0,
@@ -376,7 +380,12 @@ def check_task(action):
     for t in tools:
         if not re.match(r"^[A-Za-z0-9_.:\-]{1,128}$", t):
             raise JobError(f"quill_task: {t!r} is not a tool name")
-    return {"prompt": prompt, "tools": tools, "only": only, "require_tool": _bool(a.get("require_tool", False))}
+    out = {"prompt": prompt, "tools": tools, "only": only, "require_tool": _bool(a.get("require_tool", False))}
+    if "interruptible" in a:
+        # v3.8.4: a user message, an email alert or any other job starting ends this job; unset means
+        # a repeating job is interruptible and a one-off job (an email alert) is not
+        out["interruptible"] = _bool(a.get("interruptible"))
+    return out
 
 
 def task_brief(a):
@@ -384,6 +393,7 @@ def task_brief(a):
     a = a if isinstance(a, dict) else {}
     mode = "only these" if a.get("only", True) else "any tool, these preferred"
     req = ", must call one" if a.get("require_tool") else ""
+    req += {True: ", interruptible", False: ", not interruptible"}.get(a.get("interruptible"), "")
     tools = ", ".join(a.get("tools") or []) or "(none)"
     return f"{str(a.get('prompt') or '')[:60]} | tools: {tools} ({mode}{req})"
 
@@ -398,9 +408,10 @@ def free_time_template(tools, name="free-time", result_to="telegram"):
     (entertainment) tools, plays with it and says what it did."""
     tools = _split_tools(tools)
     return {"name": name, "description": "Free time: Quill picks one of the chosen tools and plays with it",
-            "schedule": "FREQ=HOURLY;INTERVAL=1", "action_type": "quill_task",
-            "action": {"prompt": FREE_TIME_PROMPT, "tools": tools, "only": True, "require_tool": True},
-            "timeout_sec": 600, "result_to": {"dest": result_to, "when": "always"}}
+            "schedule": "FREQ=HOURLY;BYMINUTE=0", "action_type": "quill_task",
+            "action": {"prompt": FREE_TIME_PROMPT, "tools": tools, "only": True, "require_tool": True,
+                       "interruptible": True},
+            "timeout_sec": 1800, "result_to": {"dest": result_to, "when": "always"}}
 
 
 def live_mcp_tools():
@@ -695,7 +706,7 @@ class LiveContext:
             return False, (getattr(r, "error", None) or "no reply")
         return True, getattr(r, "text", "") or ""
 
-    def quill_task(self, a, who="scheduler", max_tokens=1024, timeout=None):
+    def quill_task(self, a, who="scheduler", max_tokens=1024, timeout=None, guard=None):
         """quill_task: one persona turn with only the job's MCP tools offered
         (or any tool when only is false). -> dict(ok, text, error, trace,
         present, missing)."""
@@ -714,10 +725,12 @@ class LiveContext:
             return {"ok": False, "missing": missing,
                     "error": "none of this job's tools are on the MCP server now: " + ", ".join(want) +
                              ". Turn them on in the MCP admin console, or edit the job's tools."}
+        from . import jobguard as JG
+        unlimited = bool(guard is not None and guard.unlimited and a.get("only", True))
         with selfadmin.identity(admin=True, who=who, source="scheduler"), ENV.channel("scheduler"), \
                 perf.time_cap(timeout), selfadmin.task_tools(present if a.get("only", True) else want,
-                                                             a.get("only", True)):
-            out = ent.turn(task_prompt(a, present), [], role="persona", max_tokens=max_tokens)
+                                                             a.get("only", True)), JG.using(guard):
+            out = ent.turn(task_prompt(a, present, unlimited=unlimited), [], role="persona", max_tokens=max_tokens)
         res = {"trace": out.get("trace") or [], "present": present, "missing": missing}
         if out.get("blocked"):
             return dict(res, ok=False, error=out["blocked"])
@@ -831,7 +844,7 @@ def run_action(at, action, ctx, job=None, timeout=0, depth=0):
             ok, text = v
             return ActionResult(ok, text)
         if at == "quill_task":
-            return run_task(action, ctx, name, timeout)
+            return run_task(action, ctx, name, timeout, job=job)
         if at == "nimlab_command":
             ok, out = ctx.cli(command_argv(action), timeout=timeout or 600)
             if ok is None:
@@ -870,7 +883,7 @@ def run_action(at, action, ctx, job=None, timeout=0, depth=0):
         return ActionResult(False, f"{type(e).__name__}: {str(e)[:500]}")
 
 
-def task_prompt(a, present):
+def task_prompt(a, present, unlimited=False):
     """The job prompt plus a note naming the tools Quill was given."""
     names = present if a.get("only", True) else (present or [])
     note = ""
@@ -880,6 +893,12 @@ def task_prompt(a, present):
                    "Prefer these; any other tool you have is allowed too. ")
                 + ("You must call at least one of them before you answer. " if a.get("require_tool") else "")
                 + "Afterwards say which tool you used and what happened.")
+        if a.get("only", True) and unlimited:
+            note += (" There is no fixed limit on tool calls in this job: keep using these tools for as long as "
+                     "you like, then answer.")
+            if a.get("interruptible"):
+                note += (" If SeVin messages you, an email arrives or another scheduled job starts, this job "
+                         "ends where you are, so share anything you make as soon as you have its link.")
     return a["prompt"] + note
 
 
@@ -900,7 +919,7 @@ def _tool_report(trace):
     return calls, lines
 
 
-def run_task(action, ctx, name="adhoc", timeout=0):
+def run_task(action, ctx, name="adhoc", timeout=0, job=None):
     """quill_task: Quill gets the prompt and only the picked MCP tools (or any
     tool, with these preferred) and may call them in the tool loop. The run
     report lists every tool call and how it went. -> ActionResult."""
@@ -908,30 +927,138 @@ def run_task(action, ctx, name="adhoc", timeout=0):
     fn = getattr(ctx, "quill_task", None)
     if not callable(fn):
         return ActionResult(False, "this scheduler context can't run quill_task jobs")
-    done, v = _with_timeout(lambda: fn(a, who=f"scheduler:{name}", timeout=timeout or None), timeout)
+    from . import interrupts
+    guard = _job_guard(a, ctx, name, timeout, job)
+    kw = {"who": f"scheduler:{name}", "timeout": timeout or None}
+    if guard is not None and _takes(fn, "guard"):
+        kw["guard"] = guard
+    left = interrupts.load_leftover(name) if guard is not None and guard.interruptible else None
+    run_a = dict(a, prompt=a["prompt"] + leftover_note(left, a)) if left else a
+    done, v = _with_timeout(lambda: fn(run_a, **kw), timeout)
     if not done:
+        if guard is not None:
+            guard.cancelled.set()      # the abandoned thread ends at its next step instead of looping on
         return ActionResult(False, f"Quill did not finish the task within {timeout} s", timed_out=True)
     v = v or {}
     present, missing = list(v.get("present") or []), list(v.get("missing") or [])
     calls, lines = _tool_report(v.get("trace"))
-    ran = [c for c in calls if c["outcome"] in ("ok", "error", "failed")]
+    # load_tools only fetches definitions (lazy tool mode): it does not count as using a tool
+    ran = [c for c in calls if c["outcome"] in ("ok", "error", "failed") and c["name"] != "load_tools"]
     data = {"tools_called": calls, "tools_offered": present, "tools_missing": missing}
+    stopped = dict(guard.stopped) if guard is not None and guard.stopped else None
+    if stopped:
+        stopped.pop("mark", None)
+        data["stopped"] = stopped
+        if stopped.get("kind") == "interrupted":
+            data["interrupted"] = stopped.get("reason")
+    links = []
+    for e in v.get("trace") or []:
+        for u in e.get("links") or []:
+            if u not in links:
+                links.append(u)
+    if links:
+        data["links"] = links[:10]
+    if left:
+        data["picked_up"] = {"saved_ts": left.get("saved_ts"), "auto": not job_has_choices(a)}
+    if stopped and stopped.get("kind") == "interrupted":
+        progress = getattr(guard, "progress", "") or ""
+        if not progress.strip() and left:
+            progress = left.get("progress") or ""      # interrupted before doing anything new: keep the old
+        interrupts.save_leftover(name, {"reason": stopped.get("reason"), "progress": progress,
+                                        "links": links[:10] or list((left or {}).get("links") or []),
+                                        "interrupted_at": config.timestamp()})
+        data["leftover_saved"] = True
+    elif v.get("ok") and left:
+        interrupts.clear_leftover(name)                # finished normally: start fresh next time
+        data["leftover_cleared"] = True
     if v.get("error") and not v.get("ok"):
         out = v["error"]
+        if stopped:
+            out += f"\n\nStopped: {stopped.get('reason')}"
         if lines:
             out += "\n\nTools called:\n" + "\n".join(lines)
         return ActionResult(False, out, data=data)
     text = str(v.get("text") or "").strip()
     tail = []
+    if stopped and stopped.get("kind") == "interrupted":
+        text = (f"Ended early: {stopped.get('reason')}, so Quill stopped here. It does not resume now; where he "
+                f"left off is handed back at the next {name} run"
+                + (" (he chooses whether to pick it up)." if job_has_choices(a) else " (he continues it).")
+                + ("\nThings Quill made before stopping:\n" + "\n".join(f"- {u}" for u in links[:10])
+                   if links else ""))
+    elif stopped:
+        tail.append(f"Stopped by the job guard: {stopped.get('reason')}.")
     tail.append("Tools called:\n" + "\n".join(lines) if lines else "Tools called: none")
     if missing:
         tail.append("Not on the MCP server now (not offered): " + ", ".join(missing))
     ok = bool(v.get("ok"))
-    if ok and a.get("require_tool") and not ran:
+    if ok and a.get("require_tool") and not ran and not (stopped and stopped.get("kind") == "interrupted"):
         ok = False
         tail.insert(0, "FAILED: the job requires at least one tool call and Quill called none.")
     return ActionResult(ok, (text + "\n\n" if text else "") + "\n".join(tail), data=data,
                         notable=(not ok) or None)
+
+
+def _takes(fn, kw):
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return kw in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+
+
+def job_has_choices(a):
+    """Free time and the like: several tools to choose from (or any tool).
+    A job with one tool (or none) does one thing."""
+    return (not a.get("only", True)) or len(a.get("tools") or []) > 1
+
+
+def job_repeats(job):
+    try:
+        return S.parse(str((job or {}).get("schedule") or ""))["kind"] != "once"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def leftover_note(left, a):
+    """The words that hand an interrupted run back to the job's next run.
+    Several options (Free time): Quill chooses whether to pick it back up.
+    One function: he continues it, no choice."""
+    when = str(left.get("interrupted_at") or "")
+    why = str(left.get("reason") or "it was interrupted")
+    prog = str(left.get("progress") or "").strip() or "(nothing was recorded beyond the job starting)"
+    links = left.get("links") or []
+    head = (f"\n\nLAST TIME THIS JOB WAS INTERRUPTED{(' at ' + when) if when else ''} ({why}) before you "
+            f"finished. Where you left off:\n{prog}")
+    if links:
+        head += "\nLinks you had made: " + ", ".join(links[:5])
+    if job_has_choices(a):
+        return head + ("\nYou can pick that back up where you stopped, or do something else with these tools; "
+                       "it's your choice. Say which you chose.")
+    return head + "\nContinue it from where you stopped (do not start over), then finish the job."
+
+
+def _job_guard(a, ctx, name, timeout, job=None):
+    """v3.8.4: the guard for one quill_task run, or None. A job with its own
+    tool list gets no fixed tool-step cap (scheduler_settings.unlimited_job_tools)
+    with runaway guards instead; an interruptible job (Free time) ends when a
+    user message, an email alert or another job interrupts it."""
+    from . import jobguard as JG
+    try:
+        cluster = (getattr(ctx, "entity", None) and ctx.entity().cluster) or {}
+    except Exception:  # noqa: BLE001
+        cluster = {}
+    sset = dict(DEFAULTS, **((cluster or {}).get("scheduler_settings") or {}))
+    unlimited = bool(sset.get("unlimited_job_tools", True)) and bool(a.get("only", True))
+    if "interruptible" in a:
+        interruptible = bool(a.get("interruptible"))
+    else:
+        interruptible = job_repeats(job)
+    if not unlimited and not interruptible:
+        return None
+    return JG.JobGuard(name=name, timeout=timeout, interruptible=interruptible, unlimited=unlimited,
+                       cfg=JG.settings(cluster))
 
 
 def run_chain(action, ctx, job=None, timeout=0, depth=0):
@@ -1131,6 +1258,8 @@ class Scheduler:
         m0 = time.monotonic()
         timeout = int(job.get("timeout_sec") or s.get("default_timeout_sec") or 600)
         self.log(f"[scheduler] {name}: start ({trigger}{'' if attempt <= 1 else f', attempt {attempt}'})")
+        from . import interrupts
+        interrupts.mark(interrupts.JOB, name)   # v3.8.4: any job starting ends a running Free time
         res = run_action(job["action_type"], job["action"], self.ctx, job, timeout=timeout)
         dur = int((time.monotonic() - m0) * 1000)
         status = "SUCCEEDED" if res.ok else ("TIMED_OUT" if res.timed_out else "FAILED")
@@ -1146,7 +1275,12 @@ class Scheduler:
                 bug = self.ctx.bug("scheduler", f"job {name} {status}: {_first(out_text)}", f"scheduler.{name}")
         routed = []
         if not retry_left:
-            routed = routing.deliver(job.get("result_to"), job, status, out_text, notable, bug, self.ctx,
+            route = job.get("result_to")
+            if res.ok and (res.data or {}).get("interrupted") and not (res.data or {}).get("links"):
+                # v3.8.4: an interrupted Free time that made nothing to share stays in the log, so
+                # SeVin's chat isn't cluttered while he's talking to Quill
+                route = {"dest": "log", "when": "always"}
+            routed = routing.deliver(route, job, status, out_text, notable, bug, self.ctx,
                                      clock=self.clock)
         rec = {"run_id": rid, "job": name, "start": t0, "end": t0 + dur / 1000.0, "duration_ms": dur,
                "status": status, "trigger": trigger, "attempt": attempt,

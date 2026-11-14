@@ -371,15 +371,70 @@ def run(ctx, job, timeout=0, clock=time.time):
         _save_report(rep, int(s.get("report_keep") or 300))
         return SC.ActionResult(True, "heartbeat: no suggested actions are enabled", notable=False,
                                data={"report_id": rep["report_id"]})
+    # v3.8.4: a user message, an email alert or another job starting interrupts the heartbeat between its
+    # steps; actions it had chosen but not done are taken first, automatically, at the next heartbeat
+    from . import interrupts
+    jname = (job or {}).get("name") or SC.HEARTBEAT
+    t0 = clock()
+
+    def interrupted():
+        m = interrupts.since(t0, own=jname)
+        return interrupts.describe(m) if m else None
+
+    left = interrupts.load_leftover(jname)
+    carried = [str(n) for n in ((left or {}).get("undone") or [])]
     get_ctx = getattr(ctx, "hb_context", None) or live_context
     try:
         context = get_ctx(since)
     except Exception as e:  # noqa: BLE001
         context = {"error": f"context unavailable: {type(e).__name__}: {e}"}
-    prompt = decision_prompt(context, actions, prev, s, SC.S.fmt(clock(), with_zone=True))
+    by_name = {a["name"]: a for a in actions}
+    taken = 0
+    any_fail = False
+    used = 0
+    done_names = set()
+
+    def stop_for(why, undone):
+        undone = [n for n in undone if n not in done_names]
+        interrupts.save_leftover(jname, {"reason": why, "undone": undone, "interrupted_at": config.timestamp(),
+                                         "progress": "Chosen but not done yet: " + (", ".join(undone) or "none")})
+        rep["summary"] = (rep.get("summary") or "") + f" [interrupted: {why}; " \
+            f"{', '.join(undone) or 'nothing'} carried to the next heartbeat]"
+        rep["interrupted"] = why
+        rep["budget"].update(actions_taken=taken, tokens_used=used,
+                             elapsed_sec=round(time.monotonic() - t_start, 1))
+        _save_report(rep, int(s.get("report_keep") or 300))
+        return SC.ActionResult(True, report_text(rep), notable=False,
+                               data={"report_id": rep["report_id"], "interrupted": why, "undone": undone})
+
+    # 1. what the last heartbeat chose and could not finish: continued automatically, no new decision
+    for i, n in enumerate(carried):
+        a = by_name.get(n)
+        if a is None:
+            continue
+        why = interrupted()
+        if why:
+            return stop_for(why, carried[i:])
+        if taken >= max_actions:
+            break
+        taken += 1
+        d = {"decision": "take", "reason": f"interrupted last time ({(left or {}).get('reason') or 'interrupted'}); "
+                                           "continuing it"}
+        entry = {"name": n, "decision": "take", "reason": d["reason"], "carried": True,
+                 "default_dest": routing.describe(a.get("result_to"))}
+        entry.update(_take(a, d, ctx, s, budget_s - (time.monotonic() - t_start), clock))
+        used += entry.pop("_tokens", 0)
+        any_fail = any_fail or not entry["ok"]
+        rep["decisions"].append(entry)
+        done_names.add(n)
+    why = interrupted()
+    if why:
+        return stop_for(why, [])
+    prompt = decision_prompt(context, [a for a in actions if a["name"] not in done_names], prev, s,
+                             SC.S.fmt(clock(), with_zone=True))
     ok, answer = ctx.quill(prompt, who="heartbeat", max_tokens=int(s.get("decision_max_tokens") or 700),
                            timeout=max(30, budget_s))
-    used = _tokens(prompt, answer)
+    used += _tokens(prompt, answer)
     if not ok:
         rep["summary"] = f"Quill could not decide: {SC._first(answer)}"
         rep["budget"]["tokens_used"] = used
@@ -394,16 +449,20 @@ def run(ctx, job, timeout=0, clock=time.time):
         _save_report(rep, int(s.get("report_keep") or 300))
         return SC.ActionResult(False, rep["summary"] + ": " + SC._first(answer), data={"report_id": rep["report_id"]})
     rep["summary"] = summ
-    by_name = {a["name"]: a for a in actions}
     chosen = {}
     for d in decs:
         n = str(d.get("name") or "")
         if n in by_name and n not in chosen:
             chosen[n] = d
-    taken = 0
-    any_fail = False
-    for a in actions:                      # priority order, not the order Quill listed them in
+    order = [a for a in actions if a["name"] not in done_names]
+    wanted = [a["name"] for a in order if str((chosen.get(a["name"]) or {}).get("decision") or "").lower()
+              in ("take", "yes", "run", "do")]
+    for a in order:                        # priority order, not the order Quill listed them in
         d = chosen.get(a["name"]) or {"decision": "skip", "reason": "Quill did not mention it"}
+        if a["name"] in wanted:
+            why = interrupted()
+            if why:
+                return stop_for(why, wanted[wanted.index(a["name"]):])
         entry = {"name": a["name"], "decision": "skip", "reason": str(d.get("reason") or "")[:200],
                  "default_dest": routing.describe(a.get("result_to"))}
         want = str(d.get("decision") or "").lower() in ("take", "yes", "run", "do")
@@ -419,7 +478,10 @@ def run(ctx, job, timeout=0, clock=time.time):
             entry.update(_take(a, d, ctx, s, budget_s - (time.monotonic() - t_start), clock))
             used += entry.pop("_tokens", 0)
             any_fail = any_fail or not entry["ok"]
+            done_names.add(a["name"])
         rep["decisions"].append(entry)
+    if left:
+        interrupts.clear_leftover(jname)     # finished normally: nothing carried over any more
     rep["budget"].update(actions_taken=taken, tokens_used=used, elapsed_sec=round(time.monotonic() - t_start, 1))
     _save_report(rep, int(s.get("report_keep") or 300))
     text = report_text(rep)

@@ -106,6 +106,9 @@ def environment_block(ent, role="persona", tool_names=None):
                      "quoted phrase) or both.")
     if others:
         lines.append("- Tools you may call: " + ", ".join(others) + ". No other tools exist.")
+        if _safe(lambda: bool(ent.lazy_tools), False):
+            lines.append("- Tool definitions are not preloaded: before calling one of these tools, load its "
+                         "inputSchema with the built-in load_tools step (see the tool index).")
     elif not builtin:
         lines.append("- You have no tools in this conversation. Never write <tool_call> or any tool markup.")
     else:

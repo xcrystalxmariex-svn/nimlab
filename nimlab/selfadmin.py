@@ -103,7 +103,7 @@ def using_box(box):
 
 class TaskScope:
     """v3.8.3 quill_task jobs: the MCP tools picked for this run.
-    only=True offers just those (plus memory_search); only=False offers every
+    only=True offers just those (v3.8.4: memory_search only when listed); only=False offers every
     tool and names these as the ones to use. The MCP admin console still
     decides which tools exist: a picked tool the server no longer lists is
     simply not offered."""
@@ -553,15 +553,43 @@ class ToolBox:
         if self.scope is not None and self.scope.only:
             mcp_tools = [t for t in mcp_tools if t.get("name") in self.scope.names]
         builtin = list(getattr(entity, "builtin_tools", lambda: [])())
+        if self.scope is not None and self.scope.only:
+            # v3.8.4: "only these tools" means only these: memory_search too, unless the job lists it
+            builtin = [t for t in builtin if t.get("name") in self.scope.names]
         self.builtin_names = {t["name"] for t in builtin}
         self.tools = mcp_tools + builtin + self.admin_defs
+        self.offered_names = {t.get("name") for t in self.tools}
 
     def tool(self, name):
         return next((t for t in self.tools + self.all_tools if t.get("name") == name), None)
 
+    def scoped(self):
+        return self.scope is not None and self.scope.only
+
+    def offers(self, name):
+        """v3.8.4: may this call run here? In a scheduled job with a tool list,
+        only the job's own tools (and load_tools) may; elsewhere, unchanged."""
+        if not self.scoped():
+            return True
+        from .mcp import LOAD_TOOLS
+        return name in self.offered_names or name == LOAD_TOOLS
+
+    def offered(self, name):
+        """The definition load_tools may hand out: in a scoped job only the
+        job's own tools; elsewhere, as tool()."""
+        if not self.scoped():
+            return self.tool(name)
+        return next((t for t in self.tools if t.get("name") == name), None)
+
+    def not_offered_reason(self, name):
+        names = sorted(n for n in self.offered_names if n)
+        return f"{name} is not one of this job's tools. Use one of: {', '.join(names) or '(none)'}"
+
     def call_tool(self, name, arguments):
         ident = current()
         args = dict(arguments or {})
+        if self.scoped() and not self.offers(name):
+            return _text(self.not_offered_reason(name) + ".", True)
         run_builtin = getattr(self.entity, "run_builtin_tool", None)
         if callable(run_builtin) and name in getattr(self, "builtin_names", ()):
             return run_builtin(name, args)
