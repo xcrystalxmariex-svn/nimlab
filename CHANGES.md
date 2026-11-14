@@ -1,5 +1,29 @@
 # Changes
 
+## v3.8.6
+
+Register a phone for the audio bridge from the launcher or setup and get one block to paste into Termux, and the build version in the launcher banner. This release also carries the 3.8.4 and 3.8.5 work, which ran live but never had a version of its own.
+
+**Phone audio bridge setup (3.8.6).** Launcher **F Phone audio bridge** (also **P** on the Test server screen), `nimlab audio setup`, and an optional last step in `nimlab setup` (step 12, default Skip) all run the same flow: name the phone (checked: a-z, 0-9, - and _, not `all` or `active`; a name already registered offers a new key, another name, or cancel), say whether voice calls may use its mic, confirm the server address (the last one used, else the named tunnel's hostname), and Nim Lab registers it and prints its key once, then a block between `# ===== BEGIN NIMBRIDGE SETUP ...` and `# ===== END NIMBRIDGE SETUP ...` lines. Pasted into Termux on that phone, the block installs curl, jq and termux-api, writes the nimbridge script with a cat heredoc, checks it pasted cleanly (SHA-256), writes that phone's settings already filled in (`~/.config/nimbridge/config`, mode 600) and runs `nimbridge init`, which checks the key with the server, asks Android for the mic once when the mic is on, and starts the bridge. The phone asks nothing. The flow loops for more phones.
+
+- The block is plain ASCII with no tabs, so a paste from a phone's SSH app works line by line in an interactive shell (tested on a pty with history expansion on). It runs inside one shell function, so a failed step stops it without closing Termux, and off Termux it changes nothing.
+- The client has one source, `nimlab/clients/nimbridge.sh`; every block is built from it, so a client update reaches the next block printed.
+- The key is shown on screen and inside the block by design and is written to no file or log on the server; only its hash is kept, as before. The instructions say the block holds that phone's key.
+- `nimlab audio add NAME` still prints just the key. `nimlab audio add NAME --termux [--mic on|off] [--url URL]` prints only the block on stdout, for scripts.
+- Giving an existing phone a new key keeps its label.
+- nimbridge 1.1: new `nimbridge init` (no prompts; used by the block). `nimbridge setup` is unchanged, and phones on 1.0 keep working.
+
+**Version in the banner (3.8.6).** The launcher's main banner reads `NVIDIA NIM TEST LAB v3.8.6`, taken from `nimlab/__init__.py` (`__version__`), the one place the version lives.
+
+**Lab-wide audio bus (3.8.5).** `nimlab/audiobus.py`: Nim Lab on a headless VPS plays its audio (Telegram /autoplay, the terminal voice call, clips an agent publishes) on a phone's speaker through the nimbridge Termux client, and the phone's mic can feed a terminal voice call. Each phone has its own name and token (only the hash is stored); one phone is active at a time. Endpoints under `/v1/audio/bus`; commands `nimlab audio devices | add | remove | use | release | tone | say`.
+
+**Scheduled jobs and latency (3.8.4).**
+
+- Interrupts (`nimlab/interrupts.py`): a message from the user, a Gmail watchdog alert or another scheduled job ends an interruptible job (Free time).
+- Job guard (`nimlab/jobguard.py`): a job with its own tool list has no fixed tool-step cap (`scheduler_settings.unlimited_job_tools`, default true), with runaway guards instead (the same failing call, identical repeated results, long failure runs, model backoff).
+- MCP tool definitions are sent only when a turn needs a tool, not with every request.
+- Long-term memory on Oracle can embed in the database with an optional search-query prefix.
+
 ## v3.8.3
 
 MCP tools on every channel, prompt-task jobs with picked tools, model fallbacks, failed steps in bug reports, and a paced setup sweep.

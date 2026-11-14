@@ -758,7 +758,7 @@ class StartShVenvTests(unittest.TestCase):
 class VersionTests(unittest.TestCase):
     def test_version_is_374(self):
         from nimlab import __version__
-        self.assertEqual(__version__, "3.8.3")
+        self.assertEqual(__version__, "3.8.6")
         self.assertIn("## v3.7.4", open(os.path.join(ROOT, "CHANGES.md"), encoding="utf-8").read())
 
 

@@ -53,7 +53,7 @@ class OrderTests(Base):
         with mock.patch.object(w, "st_deps", return_value=(False, "missing: grpcio")), \
                 redirect_stdout(io.StringIO()):
             w.run()
-        self.assertIn("== Step 1/11: NVIDIA API key ==", fio.text)
+        self.assertIn("== Step 1/12: NVIDIA API key ==", fio.text)
         self.assertEqual(fio.prompts[:2], ["What now?", "NVIDIA API key"])
         self.assertEqual(events[0], "key")
         self.assertIn("deps", events)

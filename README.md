@@ -116,6 +116,7 @@ chmod +x start.sh
 | 9 | server | server settings, a local self-test, then tunnel and keep-running (below) |
 | 10 | telegram | bot token, owner capture, polling or webhook, voice replies |
 | 11 | selfadmin | turn self-admin on, the admin key, the shell switch |
+| 12 | audio | optional, Skip by default: register a phone for the audio bridge and print its ready-to-paste Termux block; loops for more phones (`nimlab setup phone`) |
 
 A step whose data comes from an earlier step that was skipped says so plainly, for example "No models discovered yet, so there is nothing to test: run step 2 (Discover models)", and offers to run that step now. It never blames the key or the internet for missing data. Ctrl+C during a long step stops that step only (what it finished is kept) and setup goes on. On an existing install (models, specs and roles already there), the data steps show their status with **Skip** as the default and offer "Run discovery again (refresh)" instead of forcing it. Setup and `nimlab doctor` also flag settings that look set but cannot work: a `voice_settings.tts_url` that is a website homepage (for example `https://nvidia.com`) instead of a speech endpoint, and role models or fallbacks that are bare URLs.
 
@@ -131,7 +132,7 @@ In Termux, install `termux-api` (and the Termux:API app) for audio playback; `mp
 
 Every screen follows the same rules: options are numbered 1-9 (the data lists go to 13), **0** goes back, related options sit under a short heading, and the most used ones come first. Lines fit the screen: on a narrow phone (under about 56 columns) the grey hints after each option are dropped and separators shrink to the screen width. Every option runs a command, so everything in the menus also works as `./start.sh <command>`.
 
-**Launcher** (`./start.sh` or `nimlab`), as of v3.8.2:
+**Launcher** (`./start.sh` or `nimlab`), as of v3.8.6 (the banner shows the build version):
 
 | Key | Screen | What is in it |
 |---|---|---|
@@ -148,7 +149,8 @@ Every screen follows the same rules: options are numbered 1-9 (the data lists go
 | 7 | Keys & MCP | NVIDIA key (enter, save, clear) and MCP server (URL, key, auth style, test) |
 | 8 | Memory | long-term memory: storage, embeddings, behaviour, test, Oracle setup |
 | 9 | Tools | install packages, `nimlab` shortcut, voice synthesizer, colours |
-| S | Guided setup | the eleven setup steps (see "Setup") |
+| S | Guided setup | the twelve setup steps; the last, a phone for audio, is optional (see "Setup") |
+| F | Phone audio bridge | register a phone and print its ready-to-paste Termux block (see "Phone audio bridge") |
 | E | Tests | the system tests, one per part, or all of them; history |
 | X | Commands & troubleshooting | every command by area (10 to a page; pick one to run it), problems by symptom, the tunnel test |
 
@@ -174,7 +176,7 @@ The older hidden letter keys still work where they do not clash with the keys ab
 
 **Memory screen** (launcher 8, testbed Settings 3, `./start.sh memory menu`): Storage 1-4 (backend, local folder, Oracle connection, embedding), Behaviour 5-11 (auto store, auto recall, what to save, de-duplication, recall, retention, shared or per user), Check 12-13 (test connection, set up Oracle tables). T and S still run the test and the setup.
 
-**Test server screen** (launcher 3, `./start.sh serve menu`): Run 1-3 (this device, LAN, public tunnel), Use it 4-7 (connection details, UI configs, self-test, request log), Setup 8-9 (server settings, new API key), then G guided server setup (tunnel and service), T tunnel status, K keep-running status, L service log, B Telegram bot.
+**Test server screen** (launcher 3, `./start.sh serve menu`): Run 1-3 (this device, LAN, public tunnel), Use it 4-7 (connection details, UI configs, self-test, request log), Setup 8-9 (server settings, new API key), then G guided server setup (tunnel and service), T tunnel status, K keep-running status, L service log, B Telegram bot, P phone audio bridge.
 
 **gRPC screen** (launcher 4 then 9, testbed 6, `./start.sh grpc menu`): Function IDs 1-4 (paste, refresh, clear, check), Per model 5-6 (language, ASR mode), Try it 7-8 (ASR, TTS).
 
@@ -628,6 +630,14 @@ cancel - Stop the reply in progress
 help - List the commands
 ```
 
+## Phone audio bridge (nimbridge, v3.8.5, v3.8.6)
+
+Nim Lab on a VPS has no speaker or mic. A phone running the nimbridge Termux client plays Nim Lab's audio (Telegram /autoplay, the terminal voice call, clips an agent publishes) and can lend its mic to the voice call.
+
+To add a phone: launcher **F Phone audio bridge** (or **P** on the Test server screen), `nimlab audio setup`, or the optional last step of `nimlab setup`. Give the phone a name, choose whether calls may use its mic and confirm the server address. Nim Lab prints the phone's key once and then one block between `# ===== BEGIN NIMBRIDGE SETUP` and `# ===== END NIMBRIDGE SETUP` lines. Install Termux and the Termux:API app on the phone, then paste the whole block into Termux. It installs curl, jq and termux-api, writes the nimbridge script and the phone's settings, checks the key with the server, asks for the mic once if you turned it on, and starts the bridge. The block holds that phone's key, so paste it only on that phone.
+
+For scripts: `nimlab audio add NAME --termux [--mic on|off] [--url URL]` prints only the block. `nimlab audio add NAME` prints only the key, for `nimbridge setup` on the phone. The client's source is `nimlab/clients/nimbridge.sh`. On the phone: `nimbridge status | stop | start | use | mic on|off | talk | logs | boot`.
+
 ## Self-admin
 
 The testbed entity can read and change its own setup through tools, but only for admins: you at the terminal, requests that use the admin key (`nimlab selfadmin admin-key` makes one, saved with 600 permissions and shown once), and the Telegram owner. Everyone else gets no admin tools, and a call to one is refused and logged.
@@ -855,7 +865,9 @@ Every command, grouped. The launcher's main menu has the same list under **Comma
 **Server and tunnel**
 
 - `nimlab audio devices`: Phones on the audio bus (nimbridge); * marks the active one
+- `nimlab audio setup`: Register a phone step by step and print a ready-to-paste Termux block
 - `nimlab audio add <name> [--label <label>]`: Register a phone for nimbridge and print its token once
+- `nimlab audio add <name> --termux [--mic on|off] [--url <url>]`: Register a phone and print only its Termux block (for scripts)
 - `nimlab audio remove <name>`: Forget a phone (its token stops working)
 - `nimlab audio use <name>`: Make this phone the active one: audio and mic requests go to it only
 - `nimlab audio release`: No active phone: nothing is relayed
@@ -1190,6 +1202,7 @@ In config_cluster.json.
 - `memory_settings.long_term.oracle.target_accuracy` (default `90`): Approximate search target accuracy (percent).
 - `memory_settings.long_term.oracle.onnx_model` (default `""`): In-database ONNX embedding model (embedding.provider oracle).
 - `memory_settings.long_term.oracle.dims` (default `0`): Vector size of the table column, VECTOR(n) (0 = any size).
+- `memory_settings.long_term.oracle.query_prefix` (default `""`): Text put before recall queries when the database embeds them (e.g. bge's "Represent this sentence for searching relevant passages: "); stored memories are embedded without it.
 - `memory_settings.long_term.oracle.connect_timeout_sec` (default `15`): Wallet backend connect time limit.
 - `memory_settings.long_term.oracle.text_index` (default `true`): Oracle Text index for keyword search (falls back to INSTR).
 - `memory_settings.long_term.ords.base_url` (default `""`): ORDS backend (same tables and profile as oracle): the schema's REST root, e.g. https://host/ords/mem. HTTPS only.

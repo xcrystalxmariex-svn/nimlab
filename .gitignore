@@ -18,3 +18,21 @@ local_settings.json
 data/legacy/
 data/*.tmp
 data/*.bak
+# 3.8.6: never commit the Oracle wallet, runtime output or backups
+assets/Wallet_*.zip
+assets/cwallet.sso
+assets/ewallet.p12
+assets/ewallet.pem
+assets/keystore.jks
+assets/truststore.jks
+assets/ojdbc.properties
+assets/sqlnet.ora
+assets/tnsnames.ora
+assets/README
+*.onnx
+*.sso
+*.p12
+*.jks
+output/
+*.bak.*
+data/audio_bus/

@@ -69,13 +69,14 @@ class LauncherMenuTests(unittest.TestCase):
         # 3.8.2: Scheduler, Health & repair, Service & update, Custom endpoints,
         # Tests and Commands are on the menu now (letters), not hidden keys.
         self.assertEqual(menu_keys(out), ["1", "2", "3", "4", "5", "6", "A", "U", "W", "H",
-                                          "7", "8", "9", "S", "E", "X", "0"])
+                                          "7", "8", "9", "S", "F", "E", "X", "0"])   # 3.8.6: F phone audio bridge
         for name in ("Testbed", "Playground", "Test server", "Discover & sweep", "Benchmark & judge",
                      "Roles & data", "Keys & MCP", "Memory", "Tools", "Scheduler", "Health & repair",
                      "Service & update", "Custom endpoints"):
             self.assertIn(name, out)
-        # short: header + menu fit one phone screen
-        self.assertLess(len(out.splitlines()), 36)
+        # short: header + menu fit one phone screen (3.8.6: 33 menu lines + the exit message,
+        # one more for F Phone audio bridge)
+        self.assertLess(len(out.splitlines()), 37)
 
     def test_every_submenu_opens_and_goes_back(self):
         screens = {"3": "TEST SERVER", "4": "DISCOVER & SWEEP", "5": "BENCHMARK & JUDGE", "6": "ROLES & DATA",
@@ -105,7 +106,7 @@ class LauncherMenuTests(unittest.TestCase):
     def test_old_letter_keys_still_work(self):
         # v3.7.0: S is now the guided setup (shown in the menu); D still opens Discover & sweep.
         for key, title in (("M", "KEYS & MCP"), ("O", "TEST SERVER"), ("D", "DISCOVER & SWEEP"),
-                           ("S", "Step 1/11"), ("R", "ROLES & DATA"), ("L", "DATA STORES & LISTS"),
+                           ("S", "Step 1/12"), ("R", "ROLES & DATA"), ("L", "DATA STORES & LISTS"),
                            ("J", "BENCHMARK & JUDGE")):
             r, out = run_launcher(f"{key.lower()}\n0\n0\n")
             self.assertEqual(r.returncode, 0, r.stderr)

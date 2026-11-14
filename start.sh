@@ -380,8 +380,15 @@ field() {
     printf ' %s%-11s%s%s %s%s%s\n' "$C_LABEL" "$1" "$C_RESET" "$C_DIM:$C_RESET" "$2" "$3" "$C_RESET"
 }
 
+# 3.8.6: the build version, read from its one home (nimlab/__init__.py) without starting Python
+nimlab_version() {
+    local v
+    v="$(sed -n 's/^__version__ *= *["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p' "$SCRIPT_DIR/nimlab/__init__.py" 2>/dev/null | head -n 1)"
+    printf '%s' "${v:-?}"
+}
+
 draw_header() {
-    banner "NVIDIA NIM TEST LAB"
+    banner "NVIDIA NIM TEST LAB v$(nimlab_version)"
     local key live inv mem mcpk total unset
     if key="$(quiet status key 2>/dev/null)"; then
         field "NVIDIA key" "$C_OK" "$key"
@@ -701,6 +708,7 @@ serve_menu() {
         item 4 K "Keep running" "service status"
         item 5 L "Service log"
         item 6 B "Telegram bot"
+        item 7 P "Phone audio bridge" "register a phone"
         item 0 0 "Back"
         pick "Select: " c || return 0
         case "$c" in
@@ -709,6 +717,7 @@ serve_menu() {
             k|K) nimlab service status; pause ;;
             l|L) nimlab service logs; pause ;;
             b|B) nimlab setup telegram; pause ;;
+            p|P) nimlab audio setup; pause ;;
             1) ensure_key && nimlab serve start; pause ;;
             2) ensure_key && nimlab serve start --lan; pause ;;
             3) ensure_key && nimlab serve start --tunnel; pause ;;
@@ -870,9 +879,10 @@ while true; do
     item 2 8 "Memory" "json / local / Oracle"
     item 3 9 "Tools" "install, shortcut"
     item 4 S "Guided setup" "step by step"
+    item 5 F "Phone audio bridge" "register a phone"
     section "Help"
-    item 5 E "Tests" "one per part, run all"
-    item 6 X "Commands & troubleshooting" "by area, by symptom"
+    item 6 E "Tests" "one per part, run all"
+    item 7 X "Commands & troubleshooting" "by area, by symptom"
     item 0 0 "Exit"
     pick "Select [0-9]: " choice || exit 0
 
@@ -882,6 +892,7 @@ while true; do
         3|o|O) serve_menu ;;
         4|d|D) models_menu ;;
         s|S) nimlab setup; pause ;;
+        f|F) nimlab audio setup; pause ;;   # 3.8.6: name, key, ready-to-paste Termux block
         h|H) nimlab ui health || true ;;
         x|X|"?") nimlab commands --menu || true ;;
         e|E) nimlab test --menu || true ;;

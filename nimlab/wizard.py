@@ -328,6 +328,8 @@ class Wizard:
             ("server", "Endpoint server, tunnel and service", self.st_server, self.do_server),
             ("telegram", "Telegram bot", self.st_telegram, self.do_telegram),
             ("selfadmin", "Self-admin (testbed can change its own setup)", self.st_selfadmin, self.do_selfadmin),
+            # 3.8.6: optional, last so the earlier step numbers stay put
+            ("audio", "Phone audio bridge (optional)", self.st_audio, self.do_audio),
         ]
         # done inside step 1 (after the key), and runnable on their own
         self.extra_steps = [
@@ -404,11 +406,12 @@ class Wizard:
             ok, text, level = self._status3(st)
             self.say(f"After: {self._mark(level)}{text}")
             self.results[key] = (ok, text, level)
-            if not self.io.yes("Run this step again?", False):
+            if key in self.LOOPS_ITSELF or not self.io.yes("Run this step again?", False):
                 return True
 
     RERUN = {"discover": "Run discovery again (refresh)", "functions": "Read the pages again (refresh)",
-             "sweep": "Run the 200 OK test again"}
+             "sweep": "Run the 200 OK test again", "audio": "Set up a phone for audio now"}
+    LOOPS_ITSELF = {"audio"}   # it asks "Register another phone?" itself
 
     @staticmethod
     def _mark(level, before=False):
@@ -1222,6 +1225,15 @@ class Wizard:
                 self.say("Install the service in the server step for it to start.")
 
     # -- 10 self-admin ----------------------------------------------------
+    # -- 12 phone audio bridge (3.8.6, optional) ---------------------------
+    def st_audio(self):
+        from . import audiosetup
+        return audiosetup.status()
+
+    def do_audio(self):
+        from . import audiosetup
+        audiosetup.flow(self.io)
+
     def st_selfadmin(self):
         from . import selfadmin
         sa = selfadmin.settings(raw_cluster())
@@ -1270,7 +1282,8 @@ ALIASES = {"dependencies": "deps", "install": "deps", "nvidia": "key", "api-key"
            "verify": "sweep", "roles": "roles",
            "ltm": "memory", "models": "roles", "stack": "roles", "serve": "server", "endpoint": "server",
            "tunnel": "server", "service": "server", "bot": "telegram", "admin": "selfadmin",
-           "self-admin": "selfadmin"}
+           "self-admin": "selfadmin", "phone": "audio", "phones": "audio", "nimbridge": "audio",
+           "bridge": "audio"}
 
 
 def cmd_setup(args):

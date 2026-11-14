@@ -228,14 +228,14 @@ class BugLogRetention(unittest.TestCase):
 
 
 class VersionEverywhere(unittest.TestCase):
-    def test_version_is_383_everywhere(self):
+    def test_version_is_386_everywhere(self):
         import nimlab
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.assertEqual(nimlab.__version__, "3.8.3")
+        self.assertEqual(nimlab.__version__, "3.8.6")
         with open(os.path.join(root, "CHANGES.md"), encoding="utf-8") as f:
             first = next(l for l in f if l.startswith("## "))
-        self.assertEqual(first.strip(), "## v3.8.3")
-        self.assertEqual(S.VERSION, "3.8.3")
+        self.assertEqual(first.strip(), "## v3.8.6")
+        self.assertEqual(S.VERSION, "3.8.6")
         with open(os.path.join(root, "start.sh"), encoding="utf-8") as f:
             self.assertNotRegex(f.read(), r"3\.[0-6]\.\d+|3\.7\.\d+\b")   # start.sh reads the version from Python
 

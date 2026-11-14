@@ -144,7 +144,8 @@ def add_device(name, label=""):
     token = "nab_" + secrets.token_urlsafe(30)
     with _locked():
         r = _registry()
-        r["devices"][name] = {"token_sha256": _hash(token), "label": (label or "")[:60],
+        old = r["devices"].get(name) or {}
+        r["devices"][name] = {"token_sha256": _hash(token), "label": (label or old.get("label") or "")[:60],
                               "created": int(time.time())}
         _write_json(_p("devices.json"), r)
     return token
@@ -561,10 +562,19 @@ def cmd_audio(args):
                       + (f"  ({d['label']})" if d['label'] else ""))
             if ds:
                 print("* = active: audio and mic requests go to that phone only.")
+        elif act == "add" and getattr(args, "termux", False):
+            return _add_termux(args)
         elif act == "add":
             tok = add_device(args.name, getattr(args, "label", "") or "")
             print(f"Phone '{args.name.lower()}' added. Its token (shown once, paste it into `nimbridge setup`):")
             print(tok)
+            print("Or get a ready-to-paste Termux block instead: nimlab audio setup")
+        elif act == "setup":
+            from . import audiosetup, wizard
+            try:
+                audiosetup.flow(wizard.IO())
+            except (KeyboardInterrupt, EOFError):
+                print()
         elif act == "remove":
             print("Removed." if remove_device(args.name) else "No such phone.")
         elif act == "use":
@@ -584,6 +594,27 @@ def cmd_audio(args):
     except BusError as e:
         print(f"Audio bus: {e.message}")
         return 1
+    return 0
+
+
+def _add_termux(args):
+    """`audio add NAME --termux`: register (or re-key) the phone and print only
+    its Termux block on stdout, for scripting; notes go to stderr."""
+    import sys
+    from . import audiosetup
+    try:
+        name = audiosetup.check_name(args.name)
+        url = audiosetup.clean_url(args.url or audiosetup.default_url())
+        src = audiosetup.client_source()
+    except (audiosetup.SetupError, OSError) as e:
+        print(f"Audio bus: {e}", file=sys.stderr)
+        return 1
+    existed = name in {d["name"] for d in devices()}
+    tok = add_device(name, getattr(args, "label", "") or "")
+    sys.stdout.write(audiosetup.termux_block(name, tok, url, args.mic, src=src))
+    sys.stdout.flush()
+    print(f"Phone '{name}' {'has a new key' if existed else 'added'}; paste the block above into Termux on "
+          f"that phone. It holds the phone's key.", file=sys.stderr)
     return 0
 
 
@@ -625,6 +656,11 @@ def add_parser(sub):
     p = a.add_parser("add", help="register a phone and print its token once")
     p.add_argument("name")
     p.add_argument("--label", default="")
+    p.add_argument("--termux", action="store_true",
+                   help="print only a ready-to-paste Termux block (installs and configures nimbridge)")
+    p.add_argument("--mic", choices=["on", "off"], default="off", help="with --termux: lend the mic to calls")
+    p.add_argument("--url", default=None, help="with --termux: server address the phone connects to")
+    a.add_parser("setup", help="register a phone step by step and print its Termux block")
     p = a.add_parser("remove", help="forget a phone (its token stops working)")
     p.add_argument("name")
     p = a.add_parser("use", help="make this phone the active one")

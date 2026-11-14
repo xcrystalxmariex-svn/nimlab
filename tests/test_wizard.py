@@ -70,18 +70,18 @@ class WizardTests(unittest.TestCase):
     def test_steps_in_the_372_order(self):
         w, *_ = make([])
         self.assertEqual(w.step_keys(), ["key", "discover", "functions", "sweep", "mcp", "roles", "grpc",
-                                         "memory", "server", "telegram", "selfadmin"])
+                                         "memory", "server", "telegram", "selfadmin", "audio"])   # 3.8.6: audio last
         self.assertEqual([k for k, *_ in w.extra_steps], ["deps", "shortcut"])
 
     def test_skip_everything_shows_status_and_summary_and_marks_done(self):
-        w, fio, cli, sh = make(["skip"] * 11)
+        w, fio, cli, sh = make(["skip"] * 12)
         self.assertTrue(wizard.first_run())
         w.run()
         self.assertEqual(cli.calls, [])
         sh.assert_not_called()
-        for i in range(1, 12):
-            self.assertIn(f"== Step {i}/11:", fio.text)
-        self.assertEqual(fio.text.count("Now: "), 11)
+        for i in range(1, 13):
+            self.assertIn(f"== Step {i}/12:", fio.text)
+        self.assertEqual(fio.text.count("Now: "), 12)
         self.assertIn("== Setup summary ==", fio.text)
         self.assertEqual(set(w.results), set(w.step_keys()))
         self.assertFalse(wizard.first_run())
@@ -89,8 +89,8 @@ class WizardTests(unittest.TestCase):
     def test_quit_stops_and_still_summarises(self):
         w, fio, cli, _ = make(["skip", "quit"])
         w.run()
-        self.assertIn("== Step 2/11:", fio.text)
-        self.assertNotIn("== Step 3/11:", fio.text)
+        self.assertIn("== Step 2/12:", fio.text)
+        self.assertNotIn("== Step 3/12:", fio.text)
         self.assertIn("== Setup summary ==", fio.text)
         self.assertIn("Left to do:", fio.text)
 
@@ -373,7 +373,7 @@ class WizardTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as out:
             self.assertEqual(wizard.cmd_setup(types.SimpleNamespace(step="list")), 0)
         lines = [ln for ln in out.getvalue().splitlines() if ln.strip()]
-        self.assertEqual(len(lines), 13)            # 11 steps + deps and shortcut (done with step 1)
+        self.assertEqual(len(lines), 14)            # 12 steps + deps and shortcut (done with step 1)
         self.assertTrue(lines[0].lstrip().startswith("1. key"))
         self.assertTrue(lines[1].lstrip().startswith("2. discover"))
         self.assertTrue(lines[3].lstrip().startswith("4. sweep"))
